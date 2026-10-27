@@ -1,0 +1,220 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sonora — Your sound, your space</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{% static 'home/style.css' %}">
+</head>
+<body>
+<div class='app' id='app'>
+<div class='aura' aria-hidden='true'><i></i><i></i></div>
+<audio id='au' preload='metadata' crossorigin='anonymous'></audio>
+<aside class="side">
+ <div class="brand"><i></i>SONORA</div>
+ <nav class="nav" aria-label="Main">
+  <button aria-current="true" id="navHome"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10H3z"/></svg>Home</button>
+  <button id="navLib"><svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13M9 18a3 3 0 11-6 0 3 3 0 016 0zm11-2a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Library</button>
+  <button id="navFav"><svg viewBox="0 0 24 24"><path d="M12 21s-8-5-8-11a4.5 4.5 0 018-2.5A4.5 4.5 0 0120 10c0 6-8 11-8 11z"/></svg>Favorites</button>
+  <button id="navHist"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>History</button>
+ </nav>
+ <div>
+  <div class="pl-header">
+   <h2>Playlists</h2>
+   <button class="pl-add" id="newPlBtn" title="Create playlist" aria-label="Create playlist">
+    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+   </button>
+  </div>
+  <div id="playlistsList">
+   <button class="pl-link" data-filter="Night drive">Night drive</button>
+   <button class="pl-link" data-filter="Deep focus">Deep focus</button>
+   <button class="pl-link" data-filter="Studio sessions">Studio sessions</button>
+  </div>
+ </div>
+</aside>
+
+<main class="main">
+ <div class="mnav">
+  <button class="btn btn-primary" id="mNavHome">Home</button>
+  <button class="btn btn-ghost" id="mNavLib">Library</button>
+  <button class="btn btn-ghost" id="mNavFav">Favorites</button>
+  <button class="btn btn-ghost" id="mNavHist">History</button>
+ </div>
+
+ <div class="top">
+  <label class="search" for="q">
+   <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+   <input id="q" type="search" placeholder="Search title, artist or album" aria-label="Search tracks" autocomplete="off">
+  </label>
+  <button class='btn btn-ghost' id='bFiles'>Add files</button>
+  <button class='btn btn-ghost' id='bDir'>Add folder</button>
+  <input id='fFiles' type='file' accept='audio/*,.flac,.m4a,.ogg' multiple hidden>
+  <input id='fDir' type='file' webkitdirectory multiple hidden>
+  <button class="btn btn-primary" id="scanBtn">
+   <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5"/></svg>
+   <span>Scan music</span>
+  </button>
+ </div>
+
+ <section class="hero" aria-label="Now playing">
+  <div>
+   <span class="chip">Now playing</span>
+   <h1 id="hTitle">{{ tracks.0.title|default:"Pick a track" }}</h1>
+   <p id="hSub">{{ tracks.0.artist|default:"Sonora" }}{% if tracks.0.album %} — {{ tracks.0.album }}{% endif %}</p>
+   <div class="meta">
+    <span class="chip" id="hCount">{{ tracks|length }} tracks</span>
+    <span class="chip">MP3 · FLAC · WAV · M4A · OGG</span>
+   </div>
+  </div>
+  <div class="stage">
+   <div class="disc" id="heroDisc">
+    <span class="disc-cover" id="discCover" style="{% if tracks.0.cover|slice:':1' == '/' or tracks.0.cover|slice:':4' == 'http' %}background-image:url('{{ tracks.0.cover }}');{% else %}background:{{ tracks.0.cover }};{% endif %}"></span>
+   </div>
+  </div>
+ </section>
+
+ <section class="scan" aria-live="polite">
+  <div>
+   <strong id="scanTitle">Library is up to date</strong><br>
+   <small id="scanSub">{{ music_dir|default:"C:\\Users\\Theeran\\Documents\\My musicc" }}</small>
+  </div>
+  <small id="scanNum">{{ tracks|length }} tracks</small>
+  <div class="bar" role="progressbar" aria-label="Scan progress"><b id="scanBar"></b></div>
+ </section>
+
+ <div class="sec"><h2>Folders</h2><small>Drag, swipe or use the arrows</small></div>
+ <div id="folders"></div>
+
+ <div class="sec"><h2 id="listHeading">All tracks</h2><small id="listSub">{{ tracks|length }} tracks</small></div>
+ <div class="tracks" id="list">
+  {% for track in tracks %}
+  <button class="row{% if forloop.first %} on{% endif %}" data-i="{{ forloop.counter0 }}" data-track-id="{{ track.id }}">
+   <span class="art" style="{% if track.cover|slice:':4' == 'http' or track.cover|slice:':1' == '/' %}background-image:url('{{ track.cover }}');background-size:cover;background-position:center;{% else %}background:{{ track.cover }};{% endif %}"></span>
+   <span class="t"><b>{{ track.title }}</b><span>{{ track.artist }}</span></span>
+   <span class="al">{{ track.album }}</span>
+   <span class="row-fav" data-fav-i="{{ forloop.counter0 }}" aria-label="Favorite">
+    <svg viewBox="0 0 24 24"><path d="M12 21s-8-5-8-11a4.5 4.5 0 018-2.5A4.5 4.5 0 0120 10c0 6-8 11-8 11z"/></svg>
+   </span>
+   <time>{{ track.duration }}</time>
+  </button>
+  {% endfor %}
+ </div>
+</main>
+
+<footer class="player">
+ <div class="now">
+  <span class="art" id="pArt" style="{% if tracks.0.cover|slice:':1' == '/' or tracks.0.cover|slice:':4' == 'http' %}background-image:url('{{ tracks.0.cover }}');background-size:cover;background-position:center;{% else %}background:{{ tracks.0.cover }};{% endif %}"></span>
+  <div><b id="pTitle">{{ tracks.0.title|default:"Pick a track" }}</b><span id="pArtist">{{ tracks.0.artist|default:"Ready to play" }}</span></div>
+  <button class="ib fav-now" id="favNow" aria-pressed="false" aria-label="Favorite" title="Add to favorites">
+   <svg viewBox="0 0 24 24"><path d="M12 21s-8-5-8-11a4.5 4.5 0 018-2.5A4.5 4.5 0 0120 10c0 6-8 11-8 11z"/></svg>
+  </button>
+ </div>
+ 
+ <div class="ctl">
+  <div class="btns">
+   <button class="ib hide-s" id="shuf" aria-pressed="false" aria-label="Shuffle">
+    <svg viewBox="0 0 24 24"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+   </button>
+   <button class="ib" id="prev" aria-label="Previous">
+    <svg viewBox="0 0 24 24"><path d="M19 5v14L8 12zM5 5v14"/></svg>
+   </button>
+   <button class='ib hide-s' id='back' aria-label='Back 10 seconds'>
+    <svg viewBox='0 0 24 24'><path d='M3 12a9 9 0 109-9 9 9 0 00-6.4 2.6L3 8M3 3v5h5'/></svg>
+   </button>
+   <button class="ib play" id="play" aria-label="Play">
+    <svg id="pi" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="currentColor"/></svg>
+   </button>
+   <button class='ib hide-s' id='fwd' aria-label='Forward 10 seconds'>
+    <svg viewBox='0 0 24 24'><path d='M21 12a9 9 0 11-9-9 9 9 0 016.4 2.6L21 8M21 3v5h-5'/></svg>
+   </button>
+   <button class="ib" id="next" aria-label="Next">
+    <svg viewBox="0 0 24 24"><path d="M5 5v14l11-7zM19 5v14"/></svg>
+   </button>
+   <button class='ib hide-s' id='ab' aria-pressed='false' aria-label='Loop A to B' title='Loop A to B'>A–B</button>
+   <button class="ib hide-s" id="rep" aria-pressed="false" aria-label="Repeat">
+    <svg viewBox="0 0 24 24"><path d="M17 2l4 4-4 4M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 01-3 3H3"/></svg>
+   </button>
+  </div>
+  <div class="seek">
+   <span id="cur">0:00</span>
+   <input type="range" id="seek" min="0" max="100" value="0" aria-label="Seek">
+   <span id="dur">0:00</span>
+  </div>
+ </div>
+ 
+ <div class='vol'>
+  <button class='ib' id='fx' aria-pressed='false' aria-label='Audio effects, 8D and equalizer'>
+   <svg viewBox='0 0 24 24'><path d='M4 6h8M16 6h4M4 12h2M10 12h10M4 18h10M18 18h2M14 4v4M8 10v4M16 16v4'/></svg>
+  </button>
+  <button class='ib' id='mute' aria-pressed='false' aria-label='Mute'>
+   <svg viewBox='0 0 24 24'><path d='M11 5L6 9H3v6h3l5 4zM16 9a4 4 0 010 6'/></svg>
+  </button>
+  <input type='range' id='vol' min='0' max='200' value='100' aria-label='Volume up to 200 percent'>
+  <span id='vl'>100%</span>
+ </div>
+</footer>
+
+<aside class='fxp' id='fxp' aria-label='Audio effects' inert>
+ <div class='fxh'>
+  <h2>Audio effects</h2>
+  <button class='ib' id='fxc' aria-label='Close effects'><svg viewBox='0 0 24 24'><path d='M6 6l12 12M18 6L6 18'/></svg></button>
+ </div>
+ 
+ <section>
+  <div class='r8'>
+   <div><b>8D audio</b><small>Sound circles your head. Use headphones.</small></div>
+   <button class='sw' id='s8' role='switch' aria-checked='false' aria-label='8D audio'></button>
+  </div>
+  <label class='lab'>
+   <b>Rotation</b>
+   <input type='range' id='r8' min='3' max='20' value='8'>
+   <span id='r8v'>8 s</span>
+  </label>
+  <div class='orbit' aria-hidden='true'><i id='od'></i></div>
+ </section>
+ 
+ <section>
+  <div class='r8'><b>Equalizer</b><select id='pre' aria-label='Equalizer preset'></select></div>
+  <div class='eq' id='eq'></div>
+ </section>
+ 
+ <section>
+  <label class='lab'>
+   <b>Speed</b>
+   <input type='range' id='spd' min='.25' max='4' step='.05' value='1'>
+   <span id='spv'>1.00×</span>
+  </label>
+  <div class='r8'>
+   <b>Mono</b>
+   <button class='sw' id='sm' role='switch' aria-checked='false' aria-label='Mono'></button>
+  </div>
+  <div class='r8'>
+   <div><b>Compressor</b><small>Evens out loud and quiet parts.</small></div>
+   <button class='sw' id='sc' role='switch' aria-checked='false' aria-label='Compressor'></button>
+  </div>
+  <div class='r8'>
+   <b>Sleep timer</b>
+   <select id='sl' aria-label='Sleep timer'>
+    <option value='0'>Off</option>
+    <option value='15'>15 min</option>
+    <option value='30'>30 min</option>
+    <option value='60'>60 min</option>
+   </select>
+  </div>
+ </section>
+ 
+ <section>
+  <b>Shortcuts</b>
+  <p class='kb'>Space play or pause · ←/→ jump 10 s · ↑/↓ volume · M mute · N/P next or previous · S shuffle · L repeat · A set A–B loop · [ / ] speed</p>
+ </section>
+</aside>
+</div>
+
+{{ tracks|json_script:"sonora-tracks-data" }}
+<script src="{% static 'home/app.js' %}"></script>
+</body>
+</html>

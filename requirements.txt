@@ -1,0 +1,7 @@
+asgiref==3.13.0
+Django==6.1.2
+mutagen==1.48.1
+sqlparse==0.6.0
+tzdata==2026.5
+gunicorn>=21.2.0
+whitenoise>=6.6.0
