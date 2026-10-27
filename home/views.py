@@ -3,6 +3,7 @@ import re
 import mimetypes
 from pathlib import Path
 
+from django.conf import settings
 from django.shortcuts import render, get_object_or_404
 from django.http import (
     HttpResponse,
@@ -137,13 +138,43 @@ def stream_audio(request, track_id):
     Ensures file is strictly within allowed music roots before streaming.
     Adds CORS headers so modern browsers decode media elements cleanly.
     """
+    if request.method == "OPTIONS":
+        response = HttpResponse(status=204)
+        response["Access-Control-Allow-Origin"] = "*"
+        response["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Range, Content-Type, Accept"
+        response["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+        return response
+
     track = get_object_or_404(Track, id=track_id)
     file_path = track.file_path
 
-    path_obj = Path(file_path) if file_path else None
-    # If file is missing or inaccessible (e.g. deployed on cloud server without local library),
-    # seamlessly redirect to demo audio stream so music playback works online!
-    if not path_obj or not is_safe_music_path(file_path) or not path_obj.exists() or not path_obj.is_file():
+    path_obj = None
+    # 1. Local path if safe and exists (for local development)
+    if file_path and is_safe_music_path(file_path):
+        cand = Path(file_path)
+        if cand.exists() and cand.is_file():
+            path_obj = cand
+
+    # 2. Bundled repository media/music/ (for cloud hosting like Vercel / Render)
+    if not path_obj and file_path:
+        fname = Path(file_path).name
+        bundled = settings.BASE_DIR / "media" / "music" / fname
+        if bundled.exists() and bundled.is_file():
+            path_obj = bundled
+
+    # 3. Fallback title match in media/music/
+    if not path_obj:
+        media_music = settings.BASE_DIR / "media" / "music"
+        if media_music.exists():
+            clean_title = (track.title or "").split(" - ")[0].strip().lower()
+            for cand in media_music.glob("*.*"):
+                if clean_title and clean_title in cand.stem.lower():
+                    path_obj = cand
+                    break
+
+    # 4. Fallback to demo audio only if no audio file is available
+    if not path_obj or not path_obj.exists() or not path_obj.is_file():
         from django.shortcuts import redirect
         demo_idx = (track.id - 1) % len(DEMO_TRACKS)
         return redirect(DEMO_TRACKS[demo_idx]["audio"])
@@ -159,6 +190,7 @@ def stream_audio(request, track_id):
     def add_cors_headers(resp):
         resp["Accept-Ranges"] = "bytes"
         resp["Access-Control-Allow-Origin"] = "*"
+        resp["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
         resp["Access-Control-Allow-Headers"] = "Range, Content-Type, Accept"
         resp["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
         return resp
