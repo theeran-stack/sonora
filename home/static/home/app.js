@@ -214,13 +214,14 @@
 
   function setArtwork(el, coverVal, gradFallback) {
     if (!el) return;
+    const fb = gradFallback || 'linear-gradient(135deg, #F26A1B, #FF9F4A)';
     if (coverVal && (coverVal.startsWith('http://') || coverVal.startsWith('https://') || coverVal.startsWith('/'))) {
-      el.style.backgroundImage = `url("${coverVal}")`;
+      el.style.backgroundImage = `url("${coverVal}"), ${fb}`;
       el.style.backgroundSize = 'cover';
       el.style.backgroundPosition = 'center';
     } else {
       el.style.backgroundImage = 'none';
-      el.style.background = coverVal || gradFallback || 'var(--g)';
+      el.style.background = coverVal || fb;
     }
   }
 
@@ -311,11 +312,12 @@
         <div class="slider" tabindex="0" aria-label="${n} tracks">
           ${ts.map((t, i) => {
             const hasRealCover = t.cover && (t.cover.startsWith('/') || t.cover.startsWith('http'));
+            const fb = t.cover_fallback || t.g || 'linear-gradient(135deg, #F26A1B, #FF9F4A)';
             const artStyle = hasRealCover
-              ? `background-image:url('${t.cover}');background-size:cover;background-position:center;`
-              : `background:${t.cover_fallback || t.g || 'var(--g)'};`;
+              ? `background-image:url('${t.cover}'), ${fb};background-size:cover;background-position:center;`
+              : `background:${fb};`;
             return `
-              <button class="card slide" style="--i:${Math.min(i, 8)}" data-i="${t.id}" data-track-id="${t.db_id || t.id}">
+              <button class="card slide" style="--i:${Math.min(i, 8)};--g:${fb};" data-i="${t.id}" data-track-id="${t.db_id || t.id}">
                 <span class="art" style="${artStyle}" loading="lazy"></span>
                 <b>${t.title}</b>
                 <span>${t.artist} · ${fmt(t.dur)}</span>
@@ -419,9 +421,10 @@
 
     list.innerHTML = visible.map(t => {
       const hasRealCover = t.cover && (t.cover.startsWith('/') || t.cover.startsWith('http'));
+      const fb = t.cover_fallback || t.g || 'linear-gradient(135deg, #F26A1B, #FF9F4A)';
       const coverStyle = hasRealCover
-        ? `background-image:url('${t.cover}');background-size:cover;background-position:center;`
-        : `background:${t.cover_fallback || t.g || 'var(--g)'};`;
+        ? `background-image:url('${t.cover}'), ${fb};background-size:cover;background-position:center;`
+        : `background:${fb};`;
       const isFav = favSet.has(t.key);
       return `
         <button class="row${t.id === cur ? ' on' : ''}" data-i="${t.id}" data-track-id="${t.db_id || t.id}">

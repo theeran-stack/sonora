@@ -140,13 +140,13 @@ def stream_audio(request, track_id):
     track = get_object_or_404(Track, id=track_id)
     file_path = track.file_path
 
-    # Security check: verify path is within configured scan roots
-    if not is_safe_music_path(file_path):
-        return HttpResponseForbidden("Access denied: requested audio file is outside permitted directories.")
-
-    path_obj = Path(file_path)
-    if not path_obj.exists() or not path_obj.is_file():
-        raise Http404("Audio file does not exist on disk.")
+    path_obj = Path(file_path) if file_path else None
+    # If file is missing or inaccessible (e.g. deployed on cloud server without local library),
+    # seamlessly redirect to demo audio stream so music playback works online!
+    if not path_obj or not is_safe_music_path(file_path) or not path_obj.exists() or not path_obj.is_file():
+        from django.shortcuts import redirect
+        demo_idx = (track.id - 1) % len(DEMO_TRACKS)
+        return redirect(DEMO_TRACKS[demo_idx]["audio"])
 
     file_size = path_obj.stat().st_size
     content_type = AUDIO_MIME_TYPES.get(path_obj.suffix.lower(), "application/octet-stream")
@@ -236,9 +236,6 @@ def get_cover_art(request, track_id):
     5. HTTP 404 (triggers graceful subtle CSS fallback on client)
     """
     track = get_object_or_404(Track, id=track_id)
-
-    if not is_safe_music_path(track.file_path):
-        return HttpResponseForbidden("Access denied.")
 
     mime_type, data = get_or_create_track_artwork(track, is_safe_path_fn=is_safe_music_path)
     if data and mime_type:

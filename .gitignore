@@ -33,6 +33,7 @@ venv.bak/
 # Project specifics
 _backups/
 .cover_cache/
+!media/covers/
 staticfiles/
 music_library/
 *.log

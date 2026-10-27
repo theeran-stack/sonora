@@ -129,6 +129,11 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# Media and Artwork Cache
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+COVER_CACHE_DIR = BASE_DIR / 'media' / 'covers'
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

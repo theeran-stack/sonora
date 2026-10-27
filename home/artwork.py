@@ -19,7 +19,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 def get_cache_dir() -> Path:
     """Returns directory used to store extracted and downloaded album artwork."""
-    cache_dir = Path(getattr(settings, "COVER_CACHE_DIR", settings.BASE_DIR / ".cover_cache"))
+    cache_dir = Path(getattr(settings, "COVER_CACHE_DIR", settings.BASE_DIR / "media" / "covers"))
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -210,26 +210,47 @@ def get_or_create_track_artwork(track, is_safe_path_fn=None):
     cache_img = cache_dir / f"track_{track.id}.img"
     cache_mime = cache_dir / f"track_{track.id}.mime"
 
-    audio_path = Path(track.file_path)
+    audio_path = Path(track.file_path) if track.file_path else None
+    audio_mtime = audio_path.stat().st_mtime if (audio_path and audio_path.exists()) else 0
 
-    # 1. Check existing valid cache
-    if cache_img.exists() and cache_mime.exists():
+    # 1. Check existing valid cache in media/covers/ and .cover_cache
+    candidate_dirs = [
+        cache_dir,
+        Path(settings.BASE_DIR) / "media" / "covers",
+        Path(settings.BASE_DIR) / ".cover_cache",
+    ]
+    seen_dirs = set()
+    for cdir in candidate_dirs:
         try:
-            cache_mtime = cache_img.stat().st_mtime
-            audio_mtime = audio_path.stat().st_mtime if audio_path.exists() else 0
-            if cache_mtime >= audio_mtime:
-                mime = cache_mime.read_text(encoding="utf-8").strip()
-                data = cache_img.read_bytes()
-                if len(data) > 0 and mime:
-                    return mime, data
-        except Exception as e:
-            logger.warning(f"Error reading artwork cache for track {track.id}: {e}")
+            cdir_key = str(cdir.resolve())
+        except Exception:
+            cdir_key = str(cdir)
+        if cdir_key in seen_dirs:
+            continue
+        seen_dirs.add(cdir_key)
 
-    # 2. Priority 1: Embedded artwork
-    mime, data = extract_embedded_cover(track.file_path)
+        cand_img = cdir / f"track_{track.id}.img"
+        cand_mime = cdir / f"track_{track.id}.mime"
+        if cand_img.exists():
+            try:
+                cand_mtime = cand_img.stat().st_mtime
+                if audio_mtime == 0 or cand_mtime >= audio_mtime:
+                    mime = "image/jpeg"
+                    if cand_mime.exists():
+                        mime = cand_mime.read_text(encoding="utf-8").strip() or "image/jpeg"
+                    data = cand_img.read_bytes()
+                    if len(data) > 0 and mime:
+                        return mime, data
+            except Exception as e:
+                logger.warning(f"Error reading artwork cache for track {track.id} from {cdir}: {e}")
 
-    # 3. Priority 2: Local folder artwork
-    if not data:
+    # 2. Priority 1: Embedded artwork (if file exists)
+    mime, data = (None, None)
+    if audio_path and audio_path.exists():
+        mime, data = extract_embedded_cover(track.file_path)
+
+    # 3. Priority 2: Local folder artwork (if file exists)
+    if not data and audio_path and audio_path.exists():
         mime, data = find_folder_artwork(track.file_path, is_safe_path_fn=is_safe_path_fn)
 
     # 4. Priority 3: Online artwork lookup
