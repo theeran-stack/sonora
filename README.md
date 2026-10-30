@@ -100,5 +100,18 @@ docker run -p 8000:8000 sonora
 
 ---
 
+## Project Evaluation Documentation
+
+Comprehensive documentation organized for academic and technical evaluation deliverables:
+
+| Category | Marks | Document Link | Key Topics Covered |
+| :--- | :---: | :--- | :--- |
+| **Error Codes** | 15 | [docs/ERROR_CODES.md](docs/ERROR_CODES.md) | HTTP status codes (`200`, `204`, `206`, `400`, `404`, `416`), application exceptions, causes, troubleshooting, and recovery procedures. |
+| **Backend & Data** | 15 | [docs/BACKEND_AND_DATA.md](docs/BACKEND_AND_DATA.md) | Django MVT architecture, SQLite models & indexing, recursive music scanner, Mutagen metadata extraction, 4-tier artwork pipeline, RFC 7233 byte-range streaming, REST APIs, and data flow diagrams. |
+| **Deployment & Security** | 15 | [docs/DEPLOYMENT_AND_SECURITY.md](docs/DEPLOYMENT_AND_SECURITY.md) | Windows PowerShell setup, Waitress/WSGI, Docker and Render deployment, `is_safe_music_path` path traversal defense, chunked memory safety, upload validation, and database protection. |
+| **Monitoring & Feedback** | 5 | [docs/MONITORING_AND_FEEDBACK.md](docs/MONITORING_AND_FEEDBACK.md) | Thread-safe `ScanState` telemetry, client-side REST polling (800ms), application logging, Web Audio FFT frequency reactive aura, and troubleshooting playbooks. |
+
+---
+
 ## License
 MIT License. Built with Django and Web Audio API.
