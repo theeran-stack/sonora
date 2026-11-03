@@ -139,11 +139,14 @@ def find_folder_artwork(file_path: str, is_safe_path_fn=None):
     return None, None
 
 
-def fetch_online_artwork(title: str, artist: str, album: str = None, timeout: float = 2.5):
+def fetch_online_artwork(title: str, artist: str, album: str = None, timeout: float = None):
     """
-    Queries iTunes Search API for song/album artwork with a strict timeout.
+    Queries iTunes Search API for song/album artwork with a configurable timeout.
     Returns (mime_type, binary_data) or (None, None).
     """
+    if timeout is None:
+        timeout = getattr(settings, "ARTWORK_API_TIMEOUT", 2.5)
+
     clean_title = (title or "").strip()
     clean_artist = (artist or "").strip()
     if not clean_title or clean_title.lower() in ["untitled", "track"]:
@@ -162,6 +165,7 @@ def fetch_online_artwork(title: str, artist: str, album: str = None, timeout: fl
         req = urllib.request.Request(url, headers={"User-Agent": "SonoraMusicPlayer/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as response:
             if response.status != 200:
+                logger.warning(f"iTunes Search API returned non-200 status {response.status}. Using Aurora fallback.")
                 return None, None
             payload = json.loads(response.read().decode("utf-8"))
 

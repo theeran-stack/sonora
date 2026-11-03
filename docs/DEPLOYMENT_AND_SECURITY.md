@@ -245,9 +245,9 @@ Before deploying SONORA to a public domain or shared server, verify the followin
 1. **Development Settings in Repository**:
    - *Current State*: `DEBUG = True`, hardcoded `SECRET_KEY`, and `ALLOWED_HOSTS = ['*']` are present in `myproject/settings.py` to facilitate frictionless local academic testing.
    - *Limitation*: For public web deployment, these must be replaced with environment variables as detailed in the checklist above.
-2. **Stateless API Authentication**:
-   - *Current State*: `/api/scan/` and `/api/upload/` endpoints are decorated with `@csrf_exempt` to support asynchronous AJAX requests from the local UI without cookie state.
-   - *Limitation*: In a multi-tenant or public environment, these endpoints require token or session authentication to prevent unauthorized scan triggers or uploads.
+2. **Helper API Token Authentication**:
+   - *Current State*: Helper communication endpoints (`/api/sync/...`) enforce secure token authentication via the `X-Sonora-Token` header.
+   - *Limitation*: In public multi-user deployments, token authentication should be upgraded to per-user JWTs or OAuth tokens. Local UI endpoints (`/api/scan/`, `/api/upload/`, `/api/discover/queue/`) are decorated with `@csrf_exempt` to facilitate headless automation.
 3. **Audio File Magic Byte Verification on Upload**:
    - *Current State*: Uploads are validated against file extension whitelist (`MUSIC_SUPPORTED_FORMATS`).
    - *Pending Task*: Integrate file header magic-byte verification (e.g., using `python-magic`) to ensure uploaded files with `.mp3` extension are genuine audio bitstreams.

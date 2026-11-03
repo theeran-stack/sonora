@@ -1,0 +1,76 @@
+{% load static %}
+<!-- Global AI Assistant Widget for SONORA -->
+<div class="sonora-assistant-root" id="sonoraAssistantRoot">
+  <!-- Floating Trigger Button -->
+  <button class="assistant-launcher" id="assistantLauncher" aria-label="Open SONORA AI Assistant" title="Ask SONORA Studio Assistant">
+    <span class="launcher-pulse"></span>
+    <svg viewBox="0 0 24 24" class="launcher-icon">
+      <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2zM7.5 13a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm9 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/>
+    </svg>
+    <span class="launcher-label">Ask Assistant</span>
+  </button>
+
+  <!-- Sliding / Floating Chat Drawer -->
+  <aside class="assistant-drawer" id="assistantDrawer" aria-label="SONORA AI Assistant Drawer" inert>
+    <!-- Drawer Header -->
+    <header class="assistant-header">
+      <div class="assistant-brand">
+        <div class="assistant-avatar">
+          <svg viewBox="0 0 24 24"><path d="M12 2a2 2 0 0 1 2 2v3h1a7 7 0 0 1 7 7v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5a7 7 0 0 1 7-7h1V4a2 2 0 0 1 2-2zm-4 11a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm8 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/></svg>
+        </div>
+        <div>
+          <h3>SONORA Assistant</h3>
+          <p class="assistant-status">
+            <span class="status-dot"></span>
+            <span>Grounded in SQLite FAQs & Error Codes</span>
+          </p>
+        </div>
+      </div>
+      <div class="assistant-header-actions">
+        <button class="assistant-btn-icon" id="assistantClearBtn" title="Clear conversation" aria-label="Clear chat">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        </button>
+        <button class="assistant-btn-icon" id="assistantCloseBtn" title="Close assistant" aria-label="Close assistant">
+          <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Quick Suggestion Chips -->
+    <div class="assistant-chips" id="assistantChips">
+      <button class="chip-btn" data-prompt="What audio formats does SONORA support?">Supported Formats</button>
+      <button class="chip-btn" data-prompt="How does seek and scrubbing work in the music player?">Range Streaming</button>
+      <button class="chip-btn" data-prompt="Explain error ERR_PATH_TRAVERSAL_DETECTED">Path Traversal (403)</button>
+      <button class="chip-btn" data-prompt="How do I troubleshoot ERR_STREAM_NOT_FOUND?">Stream 404 Recovery</button>
+      <button class="chip-btn" data-prompt="What happens if a track has no artwork?">Artwork Pipeline</button>
+    </div>
+
+    <!-- Messages Container -->
+    <div class="assistant-messages" id="assistantMessages" role="log" aria-live="polite">
+      <!-- Initial greeting message -->
+      <div class="msg msg-assistant">
+        <div class="msg-bubble">
+          <p>Hello! I am your <strong>SONORA Studio Assistant</strong>.</p>
+          <p>I answer questions using verified database records from SONORA's architecture, FAQs, and Error Codes catalogue. How can I assist you today?</p>
+        </div>
+        <span class="msg-time">Just now</span>
+      </div>
+    </div>
+
+    <!-- Input Bar -->
+    <form class="assistant-input-bar" id="assistantForm">
+      <input
+        type="text"
+        id="assistantInput"
+        placeholder="Ask about formats, range streaming, or error codes..."
+        autocomplete="off"
+        aria-label="Ask SONORA assistant"
+      />
+      <button type="submit" id="assistantSendBtn" aria-label="Send query">
+        <svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      </button>
+    </form>
+  </aside>
+</div>
+<script src="{% static 'home/assistant.js' %}"></script>
+

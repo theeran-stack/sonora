@@ -1,5 +1,6 @@
 import os
 import sys
+import hashlib
 import threading
 import logging
 from pathlib import Path
@@ -20,8 +21,13 @@ class ScanState:
     def __init__(self):
         self.is_scanning = False
         self.scanned_count = 0
+        self.discovered_count = 0
+        self.indexed_count = 0
+        self.skipped_count = 0
+        self.missing_count = 0
         self.total_tracks = 0
         self.last_scan = None
+        self.message = ""
         self.errors = []
         self._lock = threading.Lock()
 
@@ -29,35 +35,55 @@ class ScanState:
         with self._lock:
             self.is_scanning = True
             self.scanned_count = 0
+            self.discovered_count = 0
+            self.indexed_count = 0
+            self.skipped_count = 0
+            self.missing_count = 0
+            self.message = "Scan started..."
             self.errors = []
 
     def reset(self):
         with self._lock:
             self.is_scanning = False
             self.scanned_count = 0
+            self.discovered_count = 0
+            self.indexed_count = 0
+            self.skipped_count = 0
+            self.missing_count = 0
+            self.message = ""
             self.errors = []
 
-    def update_progress(self, count):
+    def update_progress(self, count, discovered=0):
         with self._lock:
             self.scanned_count = count
+            if discovered:
+                self.discovered_count = discovered
 
-    def finish(self, total, errors=None):
+    def finish(self, total, indexed=0, skipped=0, missing=0, message="", errors=None):
         with self._lock:
             self.is_scanning = False
             self.total_tracks = total
+            self.indexed_count = indexed
+            self.skipped_count = skipped
+            self.missing_count = missing
             self.last_scan = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.message = message
             if errors:
                 self.errors.extend(errors)
 
     def to_dict(self):
         with self._lock:
-            # Query actual DB count if not actively scanning
             current_total = self.total_tracks if self.is_scanning else Track.objects.count()
             return {
                 "is_scanning": self.is_scanning,
                 "scanned_count": self.scanned_count,
+                "discovered_count": self.discovered_count,
+                "indexed_count": self.indexed_count,
+                "skipped_count": self.skipped_count,
+                "missing_count": self.missing_count,
                 "total_tracks": current_total,
                 "last_scan": self.last_scan,
+                "message": self.message,
                 "errors": self.errors[-5:] if self.errors else [],
             }
 
@@ -70,8 +96,11 @@ def get_scan_directories():
     configured = getattr(settings, 'MUSIC_SCAN_DIRECTORIES', [])
     valid_paths = []
     for p in configured:
-        p_obj = Path(p).resolve()
-        valid_paths.append(p_obj)
+        try:
+            p_obj = Path(p).resolve()
+            valid_paths.append(p_obj)
+        except Exception:
+            continue
     return valid_paths
 
 
@@ -80,14 +109,15 @@ def is_safe_music_path(file_path):
     Validates that a file_path is strictly inside one of the allowed MUSIC_SCAN_DIRECTORIES.
     Prevents path traversal attacks and arbitrary filesystem access.
     """
+    if not file_path:
+        return False
     try:
         resolved_file = Path(file_path).resolve()
         for root in get_scan_directories():
             try:
-                # Check if file is relative to root
                 resolved_file.relative_to(root)
                 return True
-            except ValueError:
+            except (ValueError, RuntimeError):
                 continue
     except Exception as e:
         logger.warning(f"Error checking path security for {file_path}: {e}")
@@ -108,6 +138,24 @@ def format_duration(seconds):
     return f"{mins}:{rem_secs:02d}"
 
 
+def compute_file_hash(file_path):
+    """Calculates quick SHA-256 fingerprint from size and sample chunks."""
+    h = hashlib.sha256()
+    try:
+        size = os.path.getsize(file_path)
+        h.update(str(size).encode("utf-8"))
+        with open(file_path, "rb") as f:
+            if size <= 1024 * 1024:
+                h.update(f.read())
+            else:
+                h.update(f.read(65536))
+                f.seek(max(0, size - 65536))
+                h.update(f.read(65536))
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
 def extract_metadata(file_path):
     """
     Extracts title, artist, album, duration, genre tag, and cover status using Mutagen.
@@ -125,40 +173,33 @@ def extract_metadata(file_path):
     try:
         audio = mutagen.File(str(path_obj))
         if audio is not None:
-            # Duration
             if hasattr(audio, 'info') and hasattr(audio.info, 'length'):
                 duration = float(audio.info.length or 0.0)
 
-            # Metadata tags depending on container
-            # 1. ID3 / EasyID3 / Vorbis / MP4 tags
             tags = getattr(audio, 'tags', None)
             if tags:
-                # Title
-                for t_key in ['title', 'TIT2', '\xa9nam']:
+                for t_key in ['title', 'TIT2', '\xa9nam', 'TITLE']:
                     val = tags.get(t_key)
                     if val:
                         title = str(val[0] if isinstance(val, (list, tuple)) else val).strip()
                         if title:
                             break
 
-                # Artist
-                for a_key in ['artist', 'TPE1', '\xa9ART', 'aART']:
+                for a_key in ['artist', 'TPE1', '\xa9ART', 'aART', 'ARTIST']:
                     val = tags.get(a_key)
                     if val:
                         artist = str(val[0] if isinstance(val, (list, tuple)) else val).strip()
                         if artist:
                             break
 
-                # Album
-                for alb_key in ['album', 'TALB', '\xa9alb']:
+                for alb_key in ['album', 'TALB', '\xa9alb', 'ALBUM']:
                     val = tags.get(alb_key)
                     if val:
                         album = str(val[0] if isinstance(val, (list, tuple)) else val).strip()
                         if album:
                             break
 
-                # Genre
-                for g_key in ['genre', 'TCON', '\xa9gen']:
+                for g_key in ['genre', 'TCON', '\xa9gen', 'GENRE']:
                     val = tags.get(g_key)
                     if val:
                         genre = str(val[0] if isinstance(val, (list, tuple)) else val).strip()
@@ -182,7 +223,6 @@ def extract_metadata(file_path):
     except Exception as e:
         logger.warning(f"Metadata extraction fallback for {file_path}: {e}")
 
-    # If no embedded artwork, check if folder artwork exists (cover.jpg, folder.jpg, etc.)
     if not has_cover:
         try:
             folder_mime, folder_data = find_folder_artwork(file_path)
@@ -191,7 +231,7 @@ def extract_metadata(file_path):
         except Exception:
             pass
 
-    # Map genre into Sonora vibes if applicable
+    # Map genre into Sonora vibes
     g_lower = genre.lower()
     tag = "Local"
     if any(w in g_lower for w in ["chill", "ambient", "downtempo", "lo-fi", "lofi", "piano"]):
@@ -216,19 +256,104 @@ def extract_metadata(file_path):
 
 
 def extract_cover_bytes(file_path):
-    """
-    Extracts raw cover image data and mime-type from an audio file.
-    Returns (mime_type, binary_data) or (None, None).
-    """
+    """Extracts embedded cover bytes and MIME type from audio file."""
     return extract_embedded_cover(file_path)
+
+
+def index_single_file(file_path):
+    """
+    Indexes or updates a single audio file.
+    Detects modifications, renames, and new files.
+    Returns: ('indexed' | 'skipped' | 'renamed' | 'error', track_instance_or_error)
+    """
+    try:
+        norm_path = os.path.abspath(file_path)
+        if not os.path.isfile(norm_path):
+            return "error", "File does not exist"
+
+        ext = os.path.splitext(norm_path)[1].lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            return "skipped", "Unsupported format"
+
+        fstat = os.stat(norm_path)
+        mtime = fstat.st_mtime
+        size = fstat.st_size
+
+        # 1. Exact path match check
+        existing = Track.objects.filter(file_path=norm_path).first()
+        if existing:
+            # If unchanged in size and mtime, ensure available and skip
+            if abs(existing.file_mtime - mtime) < 0.01 and existing.file_size == size:
+                if not existing.is_available:
+                    existing.is_available = True
+                    existing.save(update_fields=["is_available"])
+                return "skipped", existing
+
+            # File modified: re-extract metadata
+            meta = extract_metadata(norm_path)
+            f_hash = compute_file_hash(norm_path)
+            with transaction.atomic():
+                existing.title = meta["title"]
+                existing.artist = meta["artist"]
+                existing.album = meta["album"]
+                existing.duration_seconds = meta["duration_seconds"]
+                existing.duration_formatted = meta["duration_formatted"]
+                existing.file_size = size
+                existing.file_mtime = mtime
+                existing.format = meta["format"]
+                existing.tag = meta["tag"]
+                existing.has_cover = meta["has_cover"]
+                existing.is_available = True
+                existing.file_hash = f_hash
+                existing.save()
+            return "indexed", existing
+
+        # 2. Check for rename: file hash matches an existing track whose old path is missing
+        f_hash = compute_file_hash(norm_path)
+        if f_hash:
+            same_hash_track = Track.objects.filter(file_hash=f_hash).first()
+            if same_hash_track and not os.path.exists(same_hash_track.file_path):
+                # Rename detected!
+                with transaction.atomic():
+                    same_hash_track.file_path = norm_path
+                    same_hash_track.file_size = size
+                    same_hash_track.file_mtime = mtime
+                    same_hash_track.is_available = True
+                    same_hash_track.save()
+                return "renamed", same_hash_track
+
+        # 3. New file: extract and create
+        meta = extract_metadata(norm_path)
+        with transaction.atomic():
+            track = Track.objects.create(
+                file_path=norm_path,
+                title=meta["title"],
+                artist=meta["artist"],
+                album=meta["album"],
+                duration_seconds=meta["duration_seconds"],
+                duration_formatted=meta["duration_formatted"],
+                file_size=size,
+                file_mtime=mtime,
+                format=meta["format"],
+                tag=meta["tag"],
+                has_cover=meta["has_cover"],
+                source_type="local",
+                is_available=True,
+                file_hash=f_hash,
+            )
+        return "indexed", track
+
+    except Exception as e:
+        logger.warning(f"Error indexing file {file_path}: {e}")
+        return "error", str(e)
 
 
 def scan_music_library(explicit_dirs=None):
     """
     Performs recursive, idempotent scan across configured music directories.
-    - Updates changed files.
-    - Avoids duplicate records.
-    - Never deletes library when folders/drives are unavailable.
+    - Discovers all supported audio files.
+    - Accurately tracks discovered, indexed, skipped, renamed, and missing files.
+    - Marks missing files safely without deleting history.
     - Non-blocking when invoked via background thread.
     """
     if SCAN_STATE.is_scanning:
@@ -238,7 +363,12 @@ def scan_music_library(explicit_dirs=None):
     SCAN_STATE.start()
     dirs_to_scan = explicit_dirs or get_scan_directories()
     discovered_files = []
+    scanned_roots = []
     errors = []
+
+    indexed_count = 0
+    skipped_count = 0
+    missing_count = 0
 
     try:
         # Collect all valid audio files
@@ -249,6 +379,8 @@ def scan_music_library(explicit_dirs=None):
                 continue
             if not p.is_dir():
                 continue
+
+            scanned_roots.append(str(p.resolve()))
 
             try:
                 for root, _, files in os.walk(p):
@@ -261,59 +393,63 @@ def scan_music_library(explicit_dirs=None):
             except Exception as ex:
                 errors.append(f"Error reading {scan_dir}: {ex}")
 
-        # Index and update database idempotently
+        SCAN_STATE.discovered_count = len(discovered_files)
+
+        if not discovered_files:
+            msg = f"Zero audio files discovered across scanned locations: {[str(d) for d in dirs_to_scan]}."
+            if not scanned_roots:
+                msg += " (No configured directories were accessible on this host)."
+            logger.info(msg)
+            total = Track.objects.count()
+            SCAN_STATE.finish(total=total, indexed=0, skipped=0, missing=0, message=msg, errors=errors)
+            return SCAN_STATE.to_dict()
+
+        # Index each discovered file
         count = 0
+        discovered_norm_paths = set()
         for fpath in discovered_files:
-            try:
-                norm_path = os.path.abspath(fpath)
-                try:
-                    fstat = os.stat(norm_path)
-                except OSError:
-                    continue
+            norm_path = os.path.abspath(fpath)
+            discovered_norm_paths.add(norm_path)
 
-                mtime = fstat.st_mtime
-                size = fstat.st_size
+            status, _ = index_single_file(norm_path)
+            if status in ("indexed", "renamed"):
+                indexed_count += 1
+            elif status == "skipped":
+                skipped_count += 1
+            elif status == "error":
+                errors.append(f"Failed to index {fpath}")
 
-                # Check if existing track matches
-                existing = Track.objects.filter(file_path=norm_path).first()
-                if existing:
-                    # If file has not changed, skip re-extracting metadata
-                    if abs(existing.file_mtime - mtime) < 0.01 and existing.file_size == size:
-                        count += 1
-                        SCAN_STATE.update_progress(count)
-                        continue
+            count += 1
+            SCAN_STATE.update_progress(count, len(discovered_files))
 
-                # Extract metadata
-                meta = extract_metadata(norm_path)
+        # Check for missing files in scanned roots (soft availability update, no deletion)
+        for root_str in scanned_roots:
+            root_tracks = Track.objects.filter(file_path__startswith=root_str, source_type="local")
+            for t in root_tracks:
+                if t.file_path not in discovered_norm_paths:
+                    if t.is_available:
+                        t.is_available = False
+                        t.save(update_fields=["is_available"])
+                        missing_count += 1
 
-                with transaction.atomic():
-                    Track.objects.update_or_create(
-                        file_path=norm_path,
-                        defaults={
-                            "title": meta["title"],
-                            "artist": meta["artist"],
-                            "album": meta["album"],
-                            "duration_seconds": meta["duration_seconds"],
-                            "duration_formatted": meta["duration_formatted"],
-                            "file_size": size,
-                            "file_mtime": mtime,
-                            "format": meta["format"],
-                            "tag": meta["tag"],
-                            "has_cover": meta["has_cover"],
-                            "source_type": "local",
-                        }
-                    )
-                count += 1
-                SCAN_STATE.update_progress(count)
-            except Exception as e:
-                errors.append(f"Error processing {fpath}: {e}")
+        total = Track.objects.filter(is_available=True).count()
+        success_msg = f"Scan complete: {len(discovered_files)} found, {indexed_count} indexed/updated, {skipped_count} skipped, {missing_count} marked missing."
+        SCAN_STATE.finish(
+            total=total,
+            indexed=indexed_count,
+            skipped=skipped_count,
+            missing=missing_count,
+            message=success_msg,
+            errors=errors,
+        )
+        logger.info(success_msg)
 
     except Exception as general_err:
-        errors.append(f"Scan failed: {general_err}")
-    finally:
+        err_msg = f"Scan failed: {general_err}"
+        errors.append(err_msg)
+        logger.error(err_msg, exc_info=True)
         total = Track.objects.count()
-        SCAN_STATE.finish(total, errors)
-        logger.info(f"Music scan finished. Total tracks in library: {total}. Discovered: {len(discovered_files)}")
+        SCAN_STATE.finish(total=total, indexed=indexed_count, skipped=skipped_count, missing=missing_count, message=err_msg, errors=errors)
 
     return SCAN_STATE.to_dict()
 

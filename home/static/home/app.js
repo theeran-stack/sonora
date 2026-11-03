@@ -534,6 +534,25 @@
 
     const c = document.querySelector('.slide.on');
     if (c) c.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+
+    preloadNextTrack();
+  }
+
+  let preloader = null;
+  function preloadNextTrack() {
+    if (!T.length) return;
+    const nextIdx = (cur + 1) % T.length;
+    const nextTrack = T[nextIdx];
+    if (nextTrack) {
+      const url = nextTrack.audio || (nextTrack.db_id ? `/stream/${nextTrack.db_id}/` : nextTrack.url);
+      if (url && (url.startsWith('/') || url.startsWith('http'))) {
+        if (!preloader) {
+          preloader = new Audio();
+          preloader.preload = 'metadata';
+        }
+        preloader.src = url;
+      }
+    }
   }
 
   au.onerror = e => {
@@ -674,16 +693,26 @@
   }
 
   // Navigation bar wiring
+  let dlPollTimer = null;
   function setActiveNav(navId) {
     activeNav = navId;
     activePlaylist = null;
-    const navButtons = [$('navHome'), $('navLib'), $('navFav'), $('navHist')].filter(Boolean);
+
+    const homeView = $('homeView');
+    const discoverView = $('discoverView');
+    const downloadsView = $('downloadsView');
+
+    if (homeView) homeView.style.display = (navId === 'discover' || navId === 'downloads') ? 'none' : 'block';
+    if (discoverView) discoverView.style.display = (navId === 'discover') ? 'block' : 'none';
+    if (downloadsView) downloadsView.style.display = (navId === 'downloads') ? 'block' : 'none';
+
+    const navButtons = [$('navHome'), $('navLib'), $('navDiscover'), $('navDownloads'), $('navFav'), $('navHist')].filter(Boolean);
     navButtons.forEach(b => b.removeAttribute('aria-current'));
     const activeBtn = $(`nav${navId.charAt(0).toUpperCase() + navId.slice(1)}`);
     if (activeBtn) activeBtn.setAttribute('aria-current', 'true');
 
     // Mobile nav
-    const mNavButtons = [$('mNavHome'), $('mNavLib'), $('mNavFav'), $('mNavHist')].filter(Boolean);
+    const mNavButtons = [$('mNavHome'), $('mNavLib'), $('mNavDiscover'), $('mNavDownloads'), $('mNavFav'), $('mNavHist')].filter(Boolean);
     mNavButtons.forEach(b => {
       b.classList.remove('btn-primary');
       b.classList.add('btn-ghost');
@@ -694,8 +723,18 @@
       activeMBtn.classList.remove('btn-ghost');
     }
 
-    buildFolders();
-    render();
+    if (navId === 'discover') {
+      clearInterval(dlPollTimer);
+      loadDiscover();
+    } else if (navId === 'downloads') {
+      loadDownloads();
+      clearInterval(dlPollTimer);
+      dlPollTimer = setInterval(loadDownloads, 3500);
+    } else {
+      clearInterval(dlPollTimer);
+      buildFolders();
+      render();
+    }
   }
 
   if ($('navHome')) $('navHome').onclick = () => setActiveNav('home');
@@ -712,11 +751,249 @@
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  if ($('navDiscover')) $('navDiscover').onclick = () => setActiveNav('discover');
+  if ($('mNavDiscover')) $('mNavDiscover').onclick = () => setActiveNav('discover');
+
+  if ($('navDownloads')) $('navDownloads').onclick = () => setActiveNav('downloads');
+  if ($('mNavDownloads')) $('mNavDownloads').onclick = () => setActiveNav('downloads');
+
   if ($('navFav')) $('navFav').onclick = () => setActiveNav('favorites');
   if ($('mNavFav')) $('mNavFav').onclick = () => setActiveNav('favorites');
 
   if ($('navHist')) $('navHist').onclick = () => setActiveNav('history');
   if ($('mNavHist')) $('mNavHist').onclick = () => setActiveNav('history');
+
+  // =========================================================================
+  // DISCOVERY & JAMENDO MODULE
+  // =========================================================================
+  let discoverCache = [];
+  async function loadDiscover(query = '') {
+    const grid = $('discoverGrid');
+    if (!grid) return;
+    grid.innerHTML = '<div class="disc-loading"><p>Connecting to licensed catalog...</p></div>';
+
+    try {
+      const resp = await fetch(`/api/discover/search/?q=${encodeURIComponent(query)}`);
+      const data = await resp.json();
+      discoverCache = data.results || [];
+      renderDiscover(discoverCache);
+    } catch (e) {
+      grid.innerHTML = '<div class="disc-loading"><p>Could not load discovery catalog. Check network connection.</p></div>';
+    }
+  }
+
+  function renderDiscover(items) {
+    const grid = $('discoverGrid');
+    if (!grid) return;
+    if (!items.length) {
+      grid.innerHTML = '<div class="disc-loading"><p>No songs found. Try another search term!</p></div>';
+      return;
+    }
+
+    grid.innerHTML = items.map(item => {
+      const artStyle = item.cover
+        ? `background-image: url('${item.cover}');`
+        : `background: linear-gradient(135deg, #f97316, #7c3aed);`;
+      const canDl = item.download_allowed !== false;
+      const previewUrl = item.preview_url || item.download_url || '';
+      return `
+        <div class="disc-card" data-external-id="${item.id}">
+          <div class="disc-card-art" style="${artStyle}">
+            <button class="preview-overlay-btn" data-preview="${previewUrl}" data-title="${item.title}" data-artist="${item.artist}" data-cover="${item.cover || ''}" title="Preview track">
+              <svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="currentColor"/></svg>
+            </button>
+          </div>
+          <div class="disc-info">
+            <b>${item.title}</b>
+            <span>${item.artist} · ${item.duration}</span>
+            <div class="disc-meta-badges">
+              <span class="badge-pill hq">${item.quality || 'HQ MP3'}</span>
+              <span class="badge-pill">${item.source || 'Jamendo'}</span>
+            </div>
+          </div>
+          <div class="disc-actions">
+            <button class="btn btn-ghost disc-play-btn" data-preview="${previewUrl}" data-title="${item.title}" data-artist="${item.artist}" data-cover="${item.cover || ''}">
+              Preview
+            </button>
+            <button class="btn btn-queue queue-btn" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}' ${canDl ? '' : 'disabled title="Download not permitted by artist"'}>
+              ${canDl ? 'Queue' : 'Stream only'}
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    grid.querySelectorAll('.disc-play-btn, .preview-overlay-btn').forEach(btn => {
+      btn.onclick = () => {
+        const streamUrl = btn.dataset.preview;
+        const title = btn.dataset.title || 'Preview Track';
+        const artist = btn.dataset.artist || 'Jamendo';
+        const cover = btn.dataset.cover || '';
+        if (streamUrl) {
+          playExternalPreview(streamUrl, title, artist, cover);
+        }
+      };
+    });
+
+    grid.querySelectorAll('.queue-btn').forEach(btn => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = 'Queuing...';
+        try {
+          const item = JSON.parse(btn.dataset.item);
+          const r = await fetch('/api/discover/queue/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item)
+          });
+          const res = await r.json();
+          if (res.status === 'queued' || res.status === 'already_queued' || res.status === 're_queued') {
+            btn.textContent = 'Queued ✓';
+            updateDownloadsBadge();
+          } else {
+            btn.textContent = 'Failed';
+            btn.disabled = false;
+          }
+        } catch (e) {
+          btn.textContent = 'Error';
+          btn.disabled = false;
+        }
+      };
+    });
+  }
+
+  function playExternalPreview(url, title, artist, cover) {
+    if ($('pTitle')) $('pTitle').textContent = title;
+    if ($('pArtist')) $('pArtist').textContent = artist;
+    setArtwork($('pArt'), cover);
+    setArtwork($('discCover'), cover);
+    if ($('hTitle')) $('hTitle').textContent = title;
+    if ($('hSub')) $('hSub').textContent = artist + ' — Jamendo Preview';
+    au.src = url;
+    au.load();
+    setPlay(true);
+  }
+
+  // Discover search bar
+  if ($('discSearchBtn') && $('discSearchInput')) {
+    const doSearch = () => loadDiscover($('discSearchInput').value.trim());
+    $('discSearchBtn').onclick = doSearch;
+    $('discSearchInput').onkeydown = e => { if (e.key === 'Enter') doSearch(); };
+  }
+
+  // Vibe chip filters
+  document.querySelectorAll('.vibe-chip').forEach(chip => {
+    chip.onclick = () => {
+      document.querySelectorAll('.vibe-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      const vibe = chip.dataset.vibe || '';
+      if ($('discSearchInput')) $('discSearchInput').value = vibe;
+      loadDiscover(vibe);
+    };
+  });
+
+  // =========================================================================
+  // DOWNLOAD MANAGER MODULE
+  // =========================================================================
+  async function loadDownloads() {
+    const list = $('downloadsList');
+    if (!list) return;
+
+    try {
+      const resp = await fetch('/api/downloads/');
+      const data = await resp.json();
+      const tasks = data.downloads || [];
+      renderDownloads(tasks);
+    } catch (e) {
+      if (list) list.innerHTML = '<div class="dl-empty"><p>Could not connect to download manager.</p></div>';
+    }
+  }
+
+  function renderDownloads(tasks) {
+    const list = $('downloadsList');
+    if (!list) return;
+
+    let queued = 0, downloading = 0, completed = 0, failed = 0;
+    tasks.forEach(t => {
+      if (t.status === 'queued') queued++;
+      else if (t.status === 'downloading') downloading++;
+      else if (t.status === 'completed') completed++;
+      else if (t.status === 'failed') failed++;
+    });
+
+    if ($('statQueued')) $('statQueued').textContent = queued;
+    if ($('statDownloading')) $('statDownloading').textContent = downloading;
+    if ($('statCompleted')) $('statCompleted').textContent = completed;
+    if ($('statFailed')) $('statFailed').textContent = failed;
+
+    const badge = $('dlBadge');
+    if (badge) {
+      const active = queued + downloading;
+      badge.textContent = active;
+      badge.style.display = active > 0 ? 'inline-block' : 'none';
+    }
+
+    if (!tasks.length) {
+      list.innerHTML = '<div class="dl-empty"><p>No downloads in queue. Browse Discover to add tracks!</p></div>';
+      return;
+    }
+
+    list.innerHTML = tasks.map(t => {
+      const artStyle = t.cover_url
+        ? `background-image: url('${t.cover_url}');`
+        : `background: linear-gradient(135deg, #38bdf8, #818cf8);`;
+      const isFailed = t.status === 'failed';
+      return `
+        <div class="dl-card" data-task-id="${t.id}">
+          <div class="dl-card-art" style="${artStyle}"></div>
+          <div class="dl-details">
+            <b>${t.title}</b>
+            <span>${t.artist} · ${t.duration}</span>
+            <div class="dl-progress-track">
+              <div class="dl-progress-fill" style="width: ${t.progress || 0}%;"></div>
+            </div>
+          </div>
+          <span class="dl-status-tag ${t.status}">${t.status} (${t.progress}%)</span>
+          <div>
+            ${isFailed ? `<button class="btn btn-ghost dl-retry-btn" data-id="${t.id}">Retry</button>` : ''}
+            <button class="btn btn-ghost dl-del-btn" data-id="${t.id}" title="Remove task">×</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    list.querySelectorAll('.dl-retry-btn').forEach(b => {
+      b.onclick = async () => {
+        await fetch(`/api/downloads/${b.dataset.id}/retry/`, { method: 'POST' });
+        loadDownloads();
+      };
+    });
+
+    list.querySelectorAll('.dl-del-btn').forEach(b => {
+      b.onclick = async () => {
+        await fetch(`/api/downloads/${b.dataset.id}/cancel/`, { method: 'POST' });
+        loadDownloads();
+      };
+    });
+  }
+
+  async function updateDownloadsBadge() {
+    try {
+      const r = await fetch('/api/downloads/');
+      const d = await r.json();
+      const active = (d.downloads || []).filter(t => t.status === 'queued' || t.status === 'downloading').length;
+      const b = $('dlBadge');
+      if (b) {
+        b.textContent = active;
+        b.style.display = active > 0 ? 'inline-block' : 'none';
+      }
+    } catch (e) {}
+  }
+
+  if ($('dlRefreshBtn')) {
+    $('dlRefreshBtn').onclick = () => loadDownloads();
+  }
+  updateDownloadsBadge();
 
   // Playlists
   function renderPlaylists() {
@@ -921,7 +1198,7 @@
     scanBtn.onclick = () => {
       scanBtn.disabled = true;
       if ($('scanTitle')) $('scanTitle').textContent = 'Scanning your music folder';
-      if ($('scanSub')) $('scanSub').textContent = 'Scanning C:\\Users\\Theeran\\Documents\\My musicc...';
+      if ($('scanSub')) $('scanSub').textContent = 'Scanning configured music library folders...';
       if ($('scanBar')) $('scanBar').style.width = '25%';
 
       fetch('/api/scan/', {

@@ -1,0 +1,48 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>404 — Page Not Found | SONORA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'home/style.css' %}">
+</head>
+<body class="sonora-page">
+
+  <header class="sonora-page-header">
+    <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;font-family:var(--font-display);font-weight:800;font-size:1.25rem;">
+      <span style="width:14px;height:14px;border-radius:50%;background:#f26a1b;box-shadow:0 0 10px #f26a1b;display:inline-block;"></span>
+      SONORA
+    </a>
+    <nav class="page-nav-links">
+      <a href="/" class="page-nav-link">Music Player</a>
+      <a href="/faq/" class="page-nav-link">FAQs</a>
+      <a href="/errors/" class="page-nav-link">Error Codes</a>
+    </nav>
+  </header>
+
+  <main class="page-container">
+    <div class="error-page-wrapper">
+      <div class="error-hero-badge">404</div>
+      <h1>Track or Page Not Found</h1>
+      <p>The audio stream, playlist resource, or route (<code>{{ request_path|default:request.path }}</code>) could not be located. It may have been moved, renamed, or never indexed.</p>
+
+      <div class="error-actions">
+        <a href="/" class="btn-primary-glow">Return to Studio Player</a>
+        <button class="btn-secondary-dark" id="errorAskAssistantBtn" onclick="window.SonoraAssistant.openWithPrompt('I encountered an HTTP 404 Not Found error on {{ request_path|default:request.path }}. How do I diagnose and fix this?')">
+          Ask Assistant for Diagnosis
+        </button>
+        <a href="/errors/?code=ERR_STREAM_NOT_FOUND" class="btn-secondary-dark">View ERR_STREAM_NOT_FOUND</a>
+      </div>
+    </div>
+  </main>
+
+  <!-- Global AI Assistant Widget -->
+  {% include "home/assistant_widget.html" %}
+
+</body>
+</html>
+

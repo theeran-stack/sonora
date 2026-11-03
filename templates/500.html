@@ -1,0 +1,48 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>500 — Server Error | SONORA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'home/style.css' %}">
+</head>
+<body class="sonora-page">
+
+  <header class="sonora-page-header">
+    <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;font-family:var(--font-display);font-weight:800;font-size:1.25rem;">
+      <span style="width:14px;height:14px;border-radius:50%;background:#f26a1b;box-shadow:0 0 10px #f26a1b;display:inline-block;"></span>
+      SONORA
+    </a>
+    <nav class="page-nav-links">
+      <a href="/" class="page-nav-link">Music Player</a>
+      <a href="/faq/" class="page-nav-link">FAQs</a>
+      <a href="/errors/" class="page-nav-link">Error Codes</a>
+    </nav>
+  </header>
+
+  <main class="page-container">
+    <div class="error-page-wrapper">
+      <div class="error-hero-badge" style="background:linear-gradient(135deg, #ef4444, #f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">500</div>
+      <h1>Internal Server Condition</h1>
+      <p>An unexpected condition occurred on the audio server while processing your request. The incident has been recorded in the application diagnostics log.</p>
+
+      <div class="error-actions">
+        <a href="/" class="btn-primary-glow">Return to Studio Player</a>
+        <button class="btn-secondary-dark" id="errorAskAssistantBtn500" onclick="window.SonoraAssistant.openWithPrompt('How do I diagnose an HTTP 500 internal server error in SONORA?')">
+          Ask Assistant for Diagnosis
+        </button>
+        <a href="/errors/" class="btn-secondary-dark">View Error Codes Catalogue</a>
+      </div>
+    </div>
+  </main>
+
+  <!-- Global AI Assistant Widget -->
+  {% include "home/assistant_widget.html" %}
+
+</body>
+</html>
+

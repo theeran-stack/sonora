@@ -7,6 +7,11 @@ SONORA is a local music player and streaming application built with Django and m
 ## Features
 
 - **Local Music Library Scanner**: Recursively scans and indexes MP3, WAV, FLAC, M4A, and OGG files with Mutagen metadata extraction.
+- **Windows Background Helper (Watchdog Automation)**: Standalone background daemon that automatically monitors your local music folder for additions, modifications, and renames, and processes download tasks at Windows boot.
+- **Online Music Discovery (Jamendo Integration)**: Search legally licensed independent music by title, artist, or vibe, preview with CORS-safe streaming, and queue eligible tracks for download.
+- **Download Manager**: Automatic download queue with progress tracking, safe filename sanitization, Mutagen ID3 tagging, and structured folder organization (`Artist/Album/Song.mp3`).
+- **Local-to-Hosted Synchronization**: Secure token-authenticated sync API bridging local Windows libraries with cloud-hosted deployments without exposing private filesystem paths.
+- **Next-Track Audio Preloading**: Seamless playback transitions with buffered pre-warming and RFC 7233 byte-range streaming.
 - **Embedded & Cloud Album Artwork**:
   1. Embedded cover art extracted directly from ID3 APIC, FLAC, M4A, and Vorbis picture blocks.
   2. Local directory image detection (`cover.jpg`, `folder.jpg`, `album.jpg`).
@@ -79,9 +84,28 @@ python manage.py runserver
 ```
 Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/) in your browser.
 
+### 6. Run the Windows Background Helper
+To monitor your local music directory continuously and automatically process downloads:
+```powershell
+# Start helper in background
+.\helper\start_helper.bat
+
+# Or install into Windows Startup to launch automatically at boot:
+.\helper\install_startup.bat
+
+# To stop the helper:
+.\helper\stop_helper.bat
+```
+
 ---
 
-## Deployment & Hosting
+## Deployment & Live URLs
+
+- **Live Production URL**: [https://sonora-music.onrender.com](https://sonora-music.onrender.com) *(Render Web Service)*
+- **Local Development URL**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+- **Health Check Endpoints**: [`/health/`](https://sonora-music.onrender.com/health/) and [`/healthz/`](https://sonora-music.onrender.com/healthz/)
+- **Interactive Knowledge Base**: [`/faq/`](https://sonora-music.onrender.com/faq/)
+- **Error Codes Catalogue**: [`/errors/`](https://sonora-music.onrender.com/errors/)
 
 ### Option 1: Render (Recommended)
 1. Push this repository to your GitHub account.
@@ -97,6 +121,21 @@ Deploy using the included `Dockerfile`:
 docker build -t sonora .
 docker run -p 8000:8000 sonora
 ```
+
+---
+
+## Architectural Improvements & Future Roadmap
+
+1. **Client-Side Offline Audio Caching**:
+   - Implement CacheStorage and IndexedDB audio blob caching in service workers for instant offline listening.
+2. **Audio Waveform Peak Generation**:
+   - Generate pre-computed 256-point peak arrays using Mutagen / PySoundFile on initial scan for instantaneous audio waveform scrubbing.
+3. **Async Task Worker Decoupling**:
+   - Introduce Celery or Redis queue for heavy background video-to-audio extraction and lossless FLAC compression.
+4. **WebSocket Real-Time Visualizer Sync**:
+   - Synchronize audio playback positions and spectrum visualizer data across multiple local network studio devices.
+5. **Lossless FLAC Web Audio Optimization**:
+   - WebAssembly (WASM) FLAC decoder integration for browsers lacking hardware FLAC decode pipelines.
 
 ---
 

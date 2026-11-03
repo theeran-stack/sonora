@@ -1,0 +1,158 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>SONORA — Frequently Asked Questions & Knowledge Base</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'home/style.css' %}">
+</head>
+<body class="sonora-page">
+
+  <header class="sonora-page-header">
+    <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;font-family:var(--font-display);font-weight:800;font-size:1.25rem;">
+      <span style="width:14px;height:14px;border-radius:50%;background:#f26a1b;box-shadow:0 0 10px #f26a1b;display:inline-block;"></span>
+      SONORA
+    </a>
+    <nav class="page-nav-links">
+      <a href="/" class="page-nav-link">← Music Player</a>
+      <a href="/faq/" class="page-nav-link active">FAQs</a>
+      <a href="/errors/" class="page-nav-link">Error Codes</a>
+    </nav>
+  </header>
+
+  <main class="page-container">
+    <div class="page-hero">
+      <div style="display:inline-block;padding:4px 12px;background:rgba(242,106,27,0.15);color:#f26a1b;border-radius:999px;font-size:0.75rem;font-weight:700;text-transform:uppercase;margin-bottom:10px;">
+        Knowledge Base
+      </div>
+      <h1>Frequently Asked Questions</h1>
+      <p>Answers to technical, architectural, and operational questions about SONORA. Backed by live SQL database records.</p>
+    </div>
+
+    <!-- Toolbar: Category filters & Live Search -->
+    <div class="page-toolbar">
+      <div class="filter-pills" id="faqFilterPills">
+        <button class="filter-pill active" data-category="">All Categories</button>
+        {% for cat in categories %}
+          <button class="filter-pill" data-category="{{ cat }}">{{ cat|title }}</button>
+        {% endfor %}
+      </div>
+      <div class="page-search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+        <input type="search" id="faqSearchInput" placeholder="Search questions..." value="{{ search_query }}" autocomplete="off">
+      </div>
+    </div>
+
+    <!-- Results count badge -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <small style="color:rgba(255,255,255,0.5);" id="faqCountLabel">Showing {{ faqs|length }} of {{ total_count }} active FAQs</small>
+    </div>
+
+    <!-- FAQ Cards Grid -->
+    <div class="faq-grid" id="faqGrid">
+      {% for item in faqs %}
+        <article class="faq-card" data-category="{{ item.category }}">
+          <div class="faq-card-header">
+            <h3 class="faq-title">{{ item.question }}</h3>
+            <span class="faq-category-badge">{{ item.category }}</span>
+          </div>
+          <p class="faq-answer">{{ item.answer }}</p>
+          <div class="faq-footer">
+            <button class="ask-assistant-btn" onclick="window.SonoraAssistant.openWithPrompt('{{ item.question|escapejs }}')">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2a2 2 0 0 1 2 2v3h1a7 7 0 0 1 7 7v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5a7 7 0 0 1 7-7h1V4a2 2 0 0 1 2-2z"/></svg>
+              Ask Assistant
+            </button>
+          </div>
+        </article>
+      {% empty %}
+        <div style="text-align:center;padding:60px 20px;color:rgba(255,255,255,0.5);">
+          No FAQ records found matching your query.
+        </div>
+      {% endfor %}
+    </div>
+  </main>
+
+  <!-- Client-side API integration script -->
+  <script>
+    (function() {
+      const searchInput = document.getElementById('faqSearchInput');
+      const pills = document.querySelectorAll('#faqFilterPills .filter-pill');
+      const grid = document.getElementById('faqGrid');
+      const countLabel = document.getElementById('faqCountLabel');
+      let currentCategory = '';
+      let searchTimeout = null;
+
+      async function fetchFaqs() {
+        const query = searchInput.value.trim();
+        const params = new URLSearchParams();
+        if (currentCategory) params.append('category', currentCategory);
+        if (query) params.append('q', query);
+
+        try {
+          const resp = await fetch('/api/faqs/?' + params.toString());
+          if (!resp.ok) return;
+          const data = await resp.json();
+          renderFaqs(data.faqs);
+          countLabel.textContent = `Showing ${data.count} active FAQs`;
+        } catch (e) {
+          console.warn('FAQ fetch error:', e);
+        }
+      }
+
+      function renderFaqs(items) {
+        if (!items || items.length === 0) {
+          grid.innerHTML = '<div style="text-align:center;padding:60px 20px;color:rgba(255,255,255,0.5);">No FAQs found matching your criteria. Try asking the Assistant!</div>';
+          return;
+        }
+
+        grid.innerHTML = items.map(item => `
+          <article class="faq-card" data-category="${item.category}">
+            <div class="faq-card-header">
+              <h3 class="faq-title">${escapeHtml(item.question)}</h3>
+              <span class="faq-category-badge">${escapeHtml(item.category)}</span>
+            </div>
+            <p class="faq-answer">${escapeHtml(item.answer)}</p>
+            <div class="faq-footer">
+              <button class="ask-assistant-btn" onclick="window.SonoraAssistant.openWithPrompt('${escapeJs(item.question)}')">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2a2 2 0 0 1 2 2v3h1a7 7 0 0 1 7 7v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5a7 7 0 0 1 7-7h1V4a2 2 0 0 1 2-2z"/></svg>
+                Ask Assistant
+              </button>
+            </div>
+          </article>
+        `).join('');
+      }
+
+      function escapeHtml(str) {
+        return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function escapeJs(str) {
+        return (str || '').replace(/'/g, "\\'").replace(/"/g, '\\"');
+      }
+
+      pills.forEach(p => {
+        p.addEventListener('click', function() {
+          pills.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+          currentCategory = this.getAttribute('data-category');
+          fetchFaqs();
+        });
+      });
+
+      searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(fetchFaqs, 250);
+      });
+    })();
+  </script>
+
+  <!-- Global AI Assistant Widget -->
+  {% include "home/assistant_widget.html" %}
+
+</body>
+</html>
+

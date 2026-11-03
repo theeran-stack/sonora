@@ -1,0 +1,8 @@
+{
+  "music_dir": "",
+  "server_url": "http://127.0.0.1:8000",
+  "sync_token": "",
+  "poll_interval_seconds": 15,
+  "sync_enabled": true,
+  "auto_download": true
+}

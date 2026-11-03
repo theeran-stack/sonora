@@ -2,8 +2,28 @@ services:
   - type: web
     name: sonora
     runtime: python
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --no-input && python manage.py migrate
-    startCommand: gunicorn myproject.wsgi:application
+    plan: starter # Starter plan enables persistent disk; change to 'free' (and comment out 'disk') if deploying on Free tier
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --no-input
+    startCommand: sh -c "python manage.py migrate && gunicorn myproject.wsgi:application"
+    disk:
+      name: sonora-media
+      mountPath: /var/data
+      sizeGB: 10
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: SONORA_PERSISTENT_DIR
+        value: /var/data
+      # Set your sync token, MongoDB URI, and Jamendo Client ID in Render Dashboard:
+      # - key: SONORA_SYNC_TOKEN
+      #   generateValue: true
+      # - key: MONGODB_URI
+      #   value: mongodb+srv://<user>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority
+      # - key: MONGODB_DB_NAME
+      #   value: sonora
+      # - key: JAMENDO_CLIENT_ID
+      #   value: your_jamendo_client_id

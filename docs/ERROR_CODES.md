@@ -29,7 +29,8 @@ The table below catalogs every HTTP status code explicitly handled or emitted ac
 | **`204 No Content`** | Preflight Success | `OPTIONS /stream/<id>/` | Browser sends CORS preflight OPTIONS request before streaming. | Emits empty body with `Access-Control-Allow-Origin: *` and allowable headers. | Browser proceeds with the subsequent GET media request. |
 | **`206 Partial Content`** | Partial Stream | `GET /stream/<id>/` | Request includes a valid `Range` header (e.g., `bytes=0-1048575` or `bytes=-500`). | Delivers chunked slice (`file_iterator`, 64KB blocks) with `Content-Range` and `Content-Length`. | Audio element buffers requested segment, enabling seek/scrub. |
 | **`302 Found`** | Redirect Fallback | `GET /stream/<id>/` | Track record exists in DB, but underlying physical audio file is missing/unreadable. | Gracefully redirects to remote sample stream (`DEMO_TRACKS[idx]["audio"]`). | Audio element seamlessly switches to remote audio stream without throwing fatal error. |
-| **`400 Bad Request`** | Client Payload Error | `POST /api/upload/` | No file payload attached in `request.FILES['audio_files']` or `request.FILES['files']`. | Returns JSON: `{"error": "No files provided"}` with HTTP 400. | Frontend displays upload status notice and terminates progress bar. |
+| **`400 Bad Request`** | Client Payload Error | `POST /api/upload/`<br>`POST /api/discover/queue/` | Missing file payload or malformed track JSON. | Returns JSON: `{"error": ...}` with HTTP 400. | Frontend displays user alert and terminates progress bar. |
+| **`401 Unauthorized`** | Auth Token Failure | `/api/sync/queue/`<br>`/api/sync/tracks/`<br>`/api/sync/upload/` | Missing or invalid `X-Sonora-Token` header. | Rejects request with `{"error": "Unauthorized"}`. | Helper logs auth error and stops communication until configured properly. |
 | **`404 Not Found`** | Resource Missing | `GET /stream/<id>/`<br>`GET /cover/<id>/`<br>Unmatched routes | 1. Invalid `track_id` not found in `Track` table.<br>2. Cover art extraction fails across all 4 fallback tiers. | 1. `get_object_or_404()` raises Django `Http404`.<br>2. `get_cover_art` raises `Http404("Cover art not found.")`. | 1. Standard 404 handler.<br>2. Client falls back to procedural CSS Aurora gradient (`cover_fallback`). |
 | **`416 Range Not Satisfiable`** | Out-of-Bounds Range | `GET /stream/<id>/` | Requested byte offset exceeds file boundary (`first_byte >= file_size` or `first_byte > last_byte`). | Emits empty body with header `Content-Range: bytes */<file_size>`. | Browser resets playback position or requests valid boundary. |
 | **`500 Internal Error`** | Server Unhandled | All Endpoints | Uncaught server exception (e.g., SQLite file lock, disk full). | Django standard 500 handler (`DEBUG=False`) or detailed traceback (`DEBUG=True`). | Client catches fetch failure; audio player logs `MediaError`. |
@@ -97,7 +98,7 @@ flowchart TD
      ```python
      MUSIC_SCAN_DIRECTORIES = [
          BASE_DIR / 'music_library',
-         Path(r'C:\Users\Theeran\Documents\My musicc'),
+         Path.home() / 'Music',
      ]
      ```
   3. Run the CLI scanner directly to view real-time standard output and errors:

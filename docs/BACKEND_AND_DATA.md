@@ -275,6 +275,16 @@ Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges
 | `/api/scan/` | `POST` | None | `{"status": "started"}` or `{"status": "in_progress"}` | Triggers asynchronous background library indexing thread. |
 | `/api/scan-status/` | `GET` | None | `{"is_scanning": bool, "scanned_count": int, "total_tracks": int, "errors": []}` | Real-time scan telemetry polled every 800ms by client. |
 | `/api/upload/` | `POST` | Multipart form (`audio_files`) | `{"status": "success", "saved_count": int, "files": []}` | Uploads audio files to `music_library/` and triggers background scan. |
+| `/api/discover/search/` | `GET` | `q` (query string) | `{"status": "success", "results": [...]}` | Searches Jamendo licensed independent music catalog. |
+| `/api/discover/queue/` | `POST` | JSON track payload | `{"status": "queued", "task": {...}}` | Enqueues eligible track into the DownloadTask queue. |
+| `/api/downloads/` | `GET` | None | `{"downloads": [...]}` | Retrieves list of active, queued, completed, and failed downloads. |
+| `/api/downloads/<id>/retry/` | `POST` | Task ID | `{"status": "retrying", "task": {...}}` | Retries a failed download task. |
+| `/api/downloads/<id>/cancel/` | `POST` | Task ID | `{"status": "cancelled", "task_id": id}` | Cancels and removes task from queue. |
+| `/api/sync/status/` | `GET` | None | `{"status": "online", "mode": "local"/"hosted", ...}` | Reports server environment and synchronization status. |
+| `/api/sync/queue/` | `GET` | Header: `X-Sonora-Token` | `{"tasks": [...]}` | Authenticated endpoint for helper to pull pending download tasks. |
+| `/api/sync/queue/update/` | `POST` | Header: `X-Sonora-Token` | `{"status": "updated", ...}` | Updates task progress, completion status, or failure error. |
+| `/api/sync/tracks/` | `POST` | Header: `X-Sonora-Token` | `{"status": "success", "synced_count": N}` | Synchronizes track metadata from local helper to hosted server. |
+| `/api/sync/upload/` | `POST` | Header: `X-Sonora-Token`, file | `{"status": "success", "track_id": id}` | Uploads audio file from helper to hosted persistent storage. |
 
 ---
 

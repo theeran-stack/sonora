@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -19,22 +20,84 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-%g1=3ud2@i@8i-9ujr*!&b=js5=y80yj#)(-ruxs@_snm4kgdh'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ['*']
+# SECURITY WARNING: keep the secret key used in production secret!
+raw_secret = os.getenv('DJANGO_SECRET_KEY')
+if not raw_secret:
+    if not DEBUG and os.getenv('DJANGO_DEBUG') is not None:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY environment variable is required in production (when DJANGO_DEBUG=False).")
+    SECRET_KEY = 'django-insecure-%g1=3ud2@i@8i-9ujr*!&b=js5=y80yj#)(-ruxs@_snm4kgdh'
+else:
+    SECRET_KEY = raw_secret
 
-# Local Music Scanner Configuration
+raw_allowed_hosts = os.getenv('DJANGO_ALLOWED_HOSTS')
+if raw_allowed_hosts:
+    ALLOWED_HOSTS = [h.strip() for h in raw_allowed_hosts.split(',') if h.strip()]
+elif not DEBUG and os.getenv('DJANGO_DEBUG') is not None:
+    ALLOWED_HOSTS = ['.onrender.com', 'localhost', '127.0.0.1']
+else:
+    ALLOWED_HOSTS = ['*']
+
+# Reverse proxy & CSRF origin configuration for Render/cloud deployment
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+raw_csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', 'https://*.onrender.com,http://localhost:8000,http://127.0.0.1:8000')
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in raw_csrf_origins.split(',') if o.strip()]
+
+if not DEBUG and os.getenv('DJANGO_DEBUG') is not None:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# Persistent Storage & Media Configuration (Render Persistent Disk or local fallback)
+PERSISTENT_DIR = os.getenv('SONORA_PERSISTENT_DIR')
+if PERSISTENT_DIR:
+    persistent_mount = Path(PERSISTENT_DIR)
+    try:
+        persistent_mount.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    MEDIA_ROOT = persistent_mount / 'media'
+else:
+    MEDIA_ROOT = BASE_DIR / 'media'
+
+COVER_CACHE_DIR = MEDIA_ROOT / 'covers'
+MEDIA_URL = 'media/'
+
+# Local & Hosted Music Scanner Configuration
 # Paths are recursively scanned. Safe access check enforces audio files remain within configured roots.
 MUSIC_SCAN_DIRECTORIES = [
-    BASE_DIR / 'music_library',  # local project folder fallback
-    Path(r'C:\Users\Theeran\Documents\My musicc'),
+    BASE_DIR / 'music_library',
+    BASE_DIR / 'media' / 'music',
+    MEDIA_ROOT / 'music',
 ]
 
+custom_music_dir = os.getenv('SONORA_MUSIC_DIR')
+if custom_music_dir:
+    MUSIC_SCAN_DIRECTORIES.append(Path(custom_music_dir))
+else:
+    # Dynamic user music directory discovery (no hardcoded personal usernames)
+    default_music = Path.home() / 'Music'
+    if default_music.exists():
+        MUSIC_SCAN_DIRECTORIES.append(default_music)
+    custom_doc_music = Path.home() / 'Documents' / 'My musicc'
+    if custom_doc_music.exists():
+        MUSIC_SCAN_DIRECTORIES.append(custom_doc_music)
+
 MUSIC_SUPPORTED_FORMATS = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
+
+# Synchronization & Discovery Configuration
+SONORA_SYNC_TOKEN = os.getenv('SONORA_SYNC_TOKEN', 'sonora_secret_sync_token_2026')
+JAMENDO_CLIENT_ID = os.getenv('JAMENDO_CLIENT_ID', '')  # Set via environment or settings
+
+# Third-Party External API Timeouts (Configurable)
+JAMENDO_API_TIMEOUT = float(os.getenv('JAMENDO_API_TIMEOUT', '4.0'))
+ARTWORK_API_TIMEOUT = float(os.getenv('ARTWORK_API_TIMEOUT', '2.5'))
+
+# MongoDB Integration Configuration (for Assistant chats & feedback)
+MONGODB_URI = os.getenv('MONGODB_URI', '')
+MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME', 'sonora')
 
 
 # Application definition
@@ -52,6 +115,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'home.middleware.RequestLoggingMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -65,7 +129,7 @@ ROOT_URLCONF = 'myproject.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates', BASE_DIR / 'home' / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -83,10 +147,20 @@ WSGI_APPLICATION = 'myproject.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+if PERSISTENT_DIR:
+    persistent_path = Path(PERSISTENT_DIR)
+    try:
+        persistent_path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    DB_PATH = persistent_path / 'db.sqlite3'
+else:
+    DB_PATH = BASE_DIR / 'db.sqlite3'
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': DB_PATH,
     }
 }
 
@@ -129,17 +203,71 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Media and Artwork Cache
-MEDIA_URL = 'media/'
-MEDIA_ROOT = BASE_DIR / 'media'
-COVER_CACHE_DIR = BASE_DIR / 'media' / 'covers'
+# Media and Artwork Cache (Configured with PERSISTENT_DIR above)
 
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
+default_email_backend = 'django.core.mail.backends.smtp.EmailBackend' if (not DEBUG and os.getenv('DJANGO_DEBUG') is not None) else 'django.core.mail.backends.console.EmailBackend'
 MAILERS = {
     'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+        'BACKEND': os.getenv('DJANGO_EMAIL_BACKEND', default_email_backend),
+    },
+}
+
+# ==============================================================================
+# LOGGING CONFIGURATION (Rotating Files & Console Output)
+# ==============================================================================
+
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} [{name}:{lineno}] {message}',
+            'style': '{',
+        },
+        'request_fmt': {
+            'format': '{message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file_requests': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOGS_DIR / 'sonora_requests.log'),
+            'maxBytes': 5 * 1024 * 1024,  # 5 MB
+            'backupCount': 5,
+            'formatter': 'request_fmt',
+            'encoding': 'utf-8',
+        },
+        'file_app': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOGS_DIR / 'sonora_app.log'),
+            'maxBytes': 5 * 1024 * 1024,  # 5 MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
+        },
+    },
+    'loggers': {
+        'sonora.requests': {
+            'handlers': ['console', 'file_requests'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'home': {
+            'handlers': ['console', 'file_app'],
+            'level': 'INFO',
+            'propagate': False,
+        },
     },
 }

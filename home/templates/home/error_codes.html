@@ -1,0 +1,187 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>SONORA — Error Codes & Troubleshooting Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'home/style.css' %}">
+</head>
+<body class="sonora-page">
+
+  <header class="sonora-page-header">
+    <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;font-family:var(--font-display);font-weight:800;font-size:1.25rem;">
+      <span style="width:14px;height:14px;border-radius:50%;background:#f26a1b;box-shadow:0 0 10px #f26a1b;display:inline-block;"></span>
+      SONORA
+    </a>
+    <nav class="page-nav-links">
+      <a href="/" class="page-nav-link">← Music Player</a>
+      <a href="/faq/" class="page-nav-link">FAQs</a>
+      <a href="/errors/" class="page-nav-link active">Error Codes</a>
+    </nav>
+  </header>
+
+  <main class="page-container">
+    <div class="page-hero">
+      <div style="display:inline-block;padding:4px 12px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:999px;font-size:0.75rem;font-weight:700;text-transform:uppercase;margin-bottom:10px;">
+        Diagnostics & Recovery
+      </div>
+      <h1>Error Codes & Diagnostic Reference</h1>
+      <p>Deterministic application error codes, root causes, HTTP response mappings, and recovery procedures implemented in SONORA.</p>
+    </div>
+
+    <!-- Toolbar: Search and Code Lookup -->
+    <div class="page-toolbar">
+      <div class="page-search" style="flex:1;max-width:480px;">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+        <input type="search" id="errSearchInput" placeholder="Filter by code (e.g. ERR_STREAM_NOT_FOUND, 404, mutagen)..." value="{{ search_query|default:selected_code }}" autocomplete="off">
+      </div>
+      <small style="color:rgba(255,255,255,0.5);" id="errCountLabel">Showing {{ error_codes|length }} of {{ total_count }} verified error specifications</small>
+    </div>
+
+    <!-- Error Cards Grid -->
+    <div class="err-grid" id="errGrid">
+      {% for item in error_codes %}
+        <article class="err-card" id="card_{{ item.code }}">
+          <div class="err-card-top">
+            <div class="err-code-title">
+              <span class="err-code-text">{{ item.code }}</span>
+              <span class="err-http-badge err-http-{{ item.http_status }}">HTTP {{ item.http_status }}</span>
+            </div>
+            <button class="ask-assistant-btn" onclick="window.SonoraAssistant.openWithPrompt('Explain error {{ item.code|escapejs }} and how to fix it')">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2a2 2 0 0 1 2 2v3h1a7 7 0 0 1 7 7v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5a7 7 0 0 1 7-7h1V4a2 2 0 0 1 2-2z"/></svg>
+              Ask Assistant
+            </button>
+          </div>
+
+          <h3 class="err-name">{{ item.title }}</h3>
+          <p class="err-desc">{{ item.description }}</p>
+
+          <div class="err-detail-box">
+            <strong>Root Cause Trigger</strong>
+            <p>{{ item.cause }}</p>
+          </div>
+
+          <div class="err-detail-box" style="border-left:3px solid #10b981;background:rgba(16,185,129,0.04);">
+            <strong style="color:#10b981;">Automated / Recommended Recovery Procedure</strong>
+            <p>{{ item.recovery_step }}</p>
+          </div>
+        </article>
+      {% empty %}
+        <div style="text-align:center;padding:60px 20px;color:rgba(255,255,255,0.5);">
+          No error codes found matching your query.
+        </div>
+      {% endfor %}
+    </div>
+  </main>
+
+  <!-- Client-side API integration & deep link handler -->
+  <script>
+    (function() {
+      const searchInput = document.getElementById('errSearchInput');
+      const grid = document.getElementById('errGrid');
+      const countLabel = document.getElementById('errCountLabel');
+      let searchTimeout = null;
+
+      async function fetchErrorCodes() {
+        const query = searchInput.value.trim();
+        const url = query ? `/api/error-codes/?code=${encodeURIComponent(query)}` : '/api/error-codes/';
+
+        try {
+          const resp = await fetch(url);
+          if (!resp.ok) {
+            // If individual code not found, try general list
+            const fallbackResp = await fetch('/api/error-codes/');
+            const fallbackData = await fallbackResp.json();
+            // Client filter
+            const filtered = fallbackData.error_codes.filter(e =>
+              e.code.toLowerCase().includes(query.toLowerCase()) ||
+              e.title.toLowerCase().includes(query.toLowerCase()) ||
+              e.description.toLowerCase().includes(query.toLowerCase()) ||
+              String(e.http_status).includes(query)
+            );
+            renderCards(filtered);
+            countLabel.textContent = `Showing ${filtered.length} matching error codes`;
+            return;
+          }
+
+          const data = await resp.json();
+          if (data.error_code) {
+            renderCards([data.error_code]);
+            countLabel.textContent = 'Showing 1 specific error code';
+          } else if (data.error_codes) {
+            renderCards(data.error_codes);
+            countLabel.textContent = `Showing ${data.count} error codes`;
+          }
+        } catch (e) {
+          console.warn('Error codes fetch error:', e);
+        }
+      }
+
+      function renderCards(items) {
+        if (!items || items.length === 0) {
+          grid.innerHTML = '<div style="text-align:center;padding:60px 20px;color:rgba(255,255,255,0.5);">No error codes matching query. Ask the Assistant!</div>';
+          return;
+        }
+
+        grid.innerHTML = items.map(item => `
+          <article class="err-card" id="card_${item.code}">
+            <div class="err-card-top">
+              <div class="err-code-title">
+                <span class="err-code-text">${escapeHtml(item.code)}</span>
+                <span class="err-http-badge err-http-${item.http_status}">HTTP ${item.http_status}</span>
+              </div>
+              <button class="ask-assistant-btn" onclick="window.SonoraAssistant.openWithPrompt('Explain error ${escapeJs(item.code)} and how to fix it')">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2a2 2 0 0 1 2 2v3h1a7 7 0 0 1 7 7v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5a7 7 0 0 1 7-7h1V4a2 2 0 0 1 2-2z"/></svg>
+                Ask Assistant
+              </button>
+            </div>
+            <h3 class="err-name">${escapeHtml(item.title)}</h3>
+            <p class="err-desc">${escapeHtml(item.description)}</p>
+            <div class="err-detail-box">
+              <strong>Root Cause Trigger</strong>
+              <p>${escapeHtml(item.cause)}</p>
+            </div>
+            <div class="err-detail-box" style="border-left:3px solid #10b981;background:rgba(16,185,129,0.04);">
+              <strong style="color:#10b981;">Automated / Recommended Recovery Procedure</strong>
+              <p>${escapeHtml(item.recovery_step)}</p>
+            </div>
+          </article>
+        `).join('');
+      }
+
+      function escapeHtml(str) {
+        return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function escapeJs(str) {
+        return (str || '').replace(/'/g, "\\'").replace(/"/g, '\\"');
+      }
+
+      searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(fetchErrorCodes, 250);
+      });
+
+      // Highlight card if ?code= in URL
+      const urlParams = new URLSearchParams(window.location.search);
+      const codeParam = urlParams.get('code');
+      if (codeParam) {
+        const el = document.getElementById('card_' + codeParam);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.style.borderColor = '#f26a1b';
+        }
+      }
+    })();
+  </script>
+
+  <!-- Global AI Assistant Widget -->
+  {% include "home/assistant_widget.html" %}
+
+</body>
+</html>
+

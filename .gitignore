@@ -39,6 +39,18 @@ staticfiles/
 music_library/
 *.log
 
+# Database
+db.sqlite3
+*.sqlite3
+db.sqlite3-journal
+
+# Environment & Secrets
+.env
+.env.*
+*.env
+helper/config.local.json
+*.local.json
+
 # IDE & OS
 .idea/
 .vscode/
