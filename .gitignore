@@ -35,7 +35,6 @@ _backups/
 .cover_cache/
 !media/covers/
 !media/music/
-staticfiles/
 music_library/
 *.log
 
