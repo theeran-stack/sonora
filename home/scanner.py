@@ -326,8 +326,15 @@ def index_single_file(file_path):
         mtime = fstat.st_mtime
         size = fstat.st_size
 
-        # 1. Exact path match check
+        # 1. Exact or normalized path match check
         existing = Track.objects.filter(file_path=norm_path).first()
+        if not existing:
+            # Check case-insensitive / normalized slash match
+            for t in Track.objects.filter(file_size=size):
+                if t.file_path and os.path.normcase(os.path.abspath(t.file_path)) == os.path.normcase(norm_path):
+                    existing = t
+                    break
+
         if existing:
             # If unchanged in size and mtime, ensure available and skip
             if abs(existing.file_mtime - mtime) < 0.01 and existing.file_size == size:
@@ -355,22 +362,57 @@ def index_single_file(file_path):
                 existing.save()
             return "indexed", existing
 
-        # 2. Check for rename: file hash matches an existing track whose old path is missing
+        # 2. Check for duplicate content hash or rename
         f_hash = compute_file_hash(norm_path)
         if f_hash:
             same_hash_track = Track.objects.filter(file_hash=f_hash).first()
-            if same_hash_track and not os.path.exists(same_hash_track.file_path):
-                # Rename detected!
-                with transaction.atomic():
-                    same_hash_track.file_path = norm_path
-                    same_hash_track.file_size = size
-                    same_hash_track.file_mtime = mtime
-                    same_hash_track.is_available = True
-                    same_hash_track.save()
-                return "renamed", same_hash_track
+            if same_hash_track:
+                # If old path is missing or inaccessible, treat as rename / relocation
+                if not os.path.exists(same_hash_track.file_path):
+                    with transaction.atomic():
+                        same_hash_track.file_path = norm_path
+                        same_hash_track.file_size = size
+                        same_hash_track.file_mtime = mtime
+                        same_hash_track.is_available = True
+                        same_hash_track.save()
+                    return "renamed", same_hash_track
+                else:
+                    # Content hash matches an existing track.
+                    # Verify if filename, stem, or metadata confirms it is the same track across directories
+                    norm_fname = Path(norm_path).name.lower()
+                    existing_fname = Path(same_hash_track.file_path).name.lower()
+                    meta = extract_metadata(norm_path)
 
-        # 3. New file: extract and create
+                    if (
+                        norm_fname == existing_fname
+                        or Path(norm_path).stem.lower() == Path(same_hash_track.file_path).stem.lower()
+                        or (meta["title"].lower() == same_hash_track.title.lower() and meta["artist"].lower() == same_hash_track.artist.lower())
+                    ):
+                        if not same_hash_track.is_available:
+                            same_hash_track.is_available = True
+                            same_hash_track.save(update_fields=["is_available"])
+                        return "skipped", same_hash_track
+
+        # 3. Check for matching metadata and file size (prevents duplicating unhashed existing records)
         meta = extract_metadata(norm_path)
+        candidates = Track.objects.filter(
+            file_size=size,
+            title__iexact=meta["title"],
+            artist__iexact=meta["artist"],
+        )
+        if candidates.exists():
+            matched_track = candidates.first()
+            if f_hash and not matched_track.file_hash:
+                matched_track.file_hash = f_hash
+                matched_track.save(update_fields=["file_hash"])
+            if not os.path.exists(matched_track.file_path):
+                matched_track.file_path = norm_path
+                matched_track.is_available = True
+                matched_track.save(update_fields=["file_path", "is_available"])
+                return "renamed", matched_track
+            return "skipped", matched_track
+
+        # 4. Truly new file: extract and create
         with transaction.atomic():
             track = Track.objects.create(
                 file_path=norm_path,
@@ -455,9 +497,15 @@ def scan_music_library(explicit_dirs=None):
         # Index each discovered file
         count = 0
         discovered_norm_paths = set()
+        seen_file_keys = set()
         for fpath in discovered_files:
             norm_path = os.path.abspath(fpath)
+            norm_key = os.path.normcase(norm_path)
+            if norm_key in seen_file_keys:
+                continue
+            seen_file_keys.add(norm_key)
             discovered_norm_paths.add(norm_path)
+            discovered_norm_paths.add(norm_key)
 
             status, _ = index_single_file(norm_path)
             if status in ("indexed", "renamed"):

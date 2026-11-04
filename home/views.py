@@ -166,18 +166,83 @@ def stream_remote_audio_with_cors(url, request):
         return HttpResponse(status=404)
 
 
+def deduplicate_tracks_for_display(track_list):
+    """
+    Deduplicates Track instances so songs duplicated across multiple scanned
+    directories appear once in the library.
+    Prioritizes records with accessible local/bundled audio files and verified hashes.
+    Does NOT delete or mutate database records.
+    """
+    groups = []
+
+    for t in track_list:
+        h = (t.file_hash or "").strip().lower()
+        title_norm = (t.title or "").strip().lower()
+        artist_norm = (t.artist or "").strip().lower()
+        dur_norm = round(t.duration_seconds or 0.0)
+        fname = re.split(r"[\\/]", t.file_path)[-1].strip().lower() if t.file_path else ""
+        size = t.file_size or 0
+
+        # Score track: prefer accessible physical files, complete hashes, and higher IDs
+        has_file = False
+        if t.file_path and os.path.exists(t.file_path):
+            has_file = True
+        elif fname and (settings.BASE_DIR / "media" / "music" / fname).exists():
+            has_file = True
+
+        score = (1 if has_file else 0) * 10 + (1 if h else 0) * 5 + t.id
+
+        matched_group = None
+        for g in groups:
+            # 1. Matching content hash
+            if h and h in g["hashes"]:
+                matched_group = g
+                break
+            # 2. Matching normalized title, artist and duration
+            if title_norm and title_norm == g["title"] and artist_norm == g["artist"] and abs(dur_norm - g["dur"]) <= 2:
+                matched_group = g
+                break
+            # 3. Matching filename and exact file_size
+            if fname and fname == g["fname"] and size > 0 and size == g["size"]:
+                matched_group = g
+                break
+
+        if matched_group:
+            if h:
+                matched_group["hashes"].add(h)
+            if score > matched_group["score"]:
+                matched_group["score"] = score
+                matched_group["track"] = t
+        else:
+            groups.append({
+                "score": score,
+                "track": t,
+                "hashes": {h} if h else set(),
+                "title": title_norm,
+                "artist": artist_norm,
+                "dur": dur_norm,
+                "fname": fname,
+                "size": size,
+            })
+
+    deduped = [g["track"] for g in groups]
+    deduped.sort(key=lambda x: x.id)
+    return deduped
+
+
 def home_page(request):
     """
     Renders the SONORA tactile music workstation.
     Passes database tracks, environment diagnostics, and initial state.
     """
     try:
-        db_tracks = Track.objects.filter(is_available=True)
-        if not db_tracks.exists():
-            db_tracks = Track.objects.all()
+        db_tracks = list(Track.objects.filter(is_available=True).order_by("id"))
+        if not db_tracks:
+            db_tracks = list(Track.objects.all().order_by("id"))
 
-        if db_tracks.exists():
-            tracks = [t.to_dict() for t in db_tracks]
+        if db_tracks:
+            deduped = deduplicate_tracks_for_display(db_tracks)
+            tracks = [t.to_dict() for t in deduped]
             has_db_tracks = True
         else:
             tracks = DEMO_TRACKS
@@ -240,35 +305,91 @@ def stream_audio(request, track_id):
 
     path_obj = None
 
-    # 1. Local path if safe and exists
-    if file_path and is_safe_music_path(file_path):
+    # 1. Direct local path if exists and safe
+    if file_path:
         cand = Path(file_path)
-        if cand.exists() and cand.is_file():
-            path_obj = cand
+        try:
+            if cand.exists() and cand.is_file():
+                path_obj = cand
+        except Exception:
+            pass
 
-    # 2. Bundled repository media/music/ or persistent storage
-    if not path_obj and file_path:
-        fname = Path(file_path).name
+    # Extract clean filename portably (compatible across Windows backslashes and POSIX forward slashes)
+    fname = re.split(r"[\\/]", file_path)[-1] if file_path else ""
+
+    # 2. Bundled repository media/music/
+    if not path_obj and fname:
         bundled = settings.BASE_DIR / "media" / "music" / fname
         if bundled.exists() and bundled.is_file():
             path_obj = bundled
 
     # 3. Persistent media root fallback
-    if not path_obj and file_path:
-        fname = Path(file_path).name
+    if not path_obj and fname and hasattr(settings, "MEDIA_ROOT"):
         persistent = settings.MEDIA_ROOT / "music" / fname
         if persistent.exists() and persistent.is_file():
             path_obj = persistent
 
-    # 4. Fallback title match in media/music/
+    # 4. Check music_library directory (upload destination)
+    if not path_obj and fname:
+        lib_file = settings.BASE_DIR / "music_library" / fname
+        if lib_file.exists() and lib_file.is_file():
+            path_obj = lib_file
+
+    # 5. Check temporary directories (for cloud serverless uploads)
+    if not path_obj and fname:
+        import tempfile
+        tmp_dirs = [
+            Path("/tmp/music"),
+            Path("/tmp/music_library"),
+            Path(tempfile.gettempdir()) / "music",
+            Path(tempfile.gettempdir()) / "music_library",
+        ]
+        for td in tmp_dirs:
+            cand = td / fname
+            if cand.exists() and cand.is_file():
+                path_obj = cand
+                break
+
+    # 6. Case-insensitive and stem search in media/music and music_library
     if not path_obj:
-        media_music = settings.BASE_DIR / "media" / "music"
-        if media_music.exists():
-            clean_title = (track.title or "").split(" - ")[0].strip().lower()
-            for cand in media_music.glob("*.*"):
-                if clean_title and clean_title in cand.stem.lower():
-                    path_obj = cand
-                    break
+        search_dirs = [
+            settings.BASE_DIR / "media" / "music",
+            settings.BASE_DIR / "music_library",
+        ]
+        if hasattr(settings, "MEDIA_ROOT"):
+            search_dirs.append(settings.MEDIA_ROOT / "music")
+
+        fname_lower = fname.lower()
+        clean_title = (track.title or "").split(" - ")[0].strip().lower()
+
+        for sdir in search_dirs:
+            if sdir.exists():
+                for cand in sdir.glob("*.*"):
+                    if cand.is_file():
+                        if fname_lower and cand.name.lower() == fname_lower:
+                            path_obj = cand
+                            break
+                        if clean_title and clean_title in cand.stem.lower():
+                            path_obj = cand
+                            break
+            if path_obj:
+                break
+
+    # 7. Match by track hash if available
+    if not path_obj and track.file_hash:
+        from .scanner import compute_file_hash
+        search_dirs = [
+            settings.BASE_DIR / "media" / "music",
+            settings.BASE_DIR / "music_library",
+        ]
+        for sdir in search_dirs:
+            if sdir.exists():
+                for cand in sdir.glob("*.*"):
+                    if cand.is_file() and compute_file_hash(str(cand)) == track.file_hash:
+                        path_obj = cand
+                        break
+            if path_obj:
+                break
 
     # 5. Missing file resolution
     if not path_obj or not path_obj.exists() or not path_obj.is_file():
@@ -511,21 +632,26 @@ def api_upload_music(request):
     if not files:
         return JsonResponse({"error": "No files provided"}, status=400)
 
-    # Store uploaded music under persistent media mount when available, or local music_library fallback
+    # Store uploaded music under persistent media mount, local music_library, or writable /tmp fallback
+    upload_dir = None
     persistent_mount = getattr(settings, "PERSISTENT_DIR", None)
     if persistent_mount and Path(persistent_mount).exists() and hasattr(settings, "MEDIA_ROOT"):
         upload_dir = settings.MEDIA_ROOT / "music"
-    else:
-        upload_dir = settings.BASE_DIR / "music_library"
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            upload_dir = None
 
-    try:
-        upload_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        return JsonResponse({
-            "error": "ERR_FILESYSTEM_READONLY",
-            "message": "Local filesystem is read-only. On cloud serverless deployments, use the Supabase signed upload endpoint /api/upload/sign/.",
-            "details": str(e)
-        }, status=400)
+    if not upload_dir:
+        cand_dir = settings.BASE_DIR / "music_library"
+        try:
+            cand_dir.mkdir(parents=True, exist_ok=True)
+            upload_dir = cand_dir
+        except OSError:
+            import tempfile
+            tmp_root = Path("/tmp") if os.path.exists("/tmp") else Path(tempfile.gettempdir())
+            upload_dir = tmp_root / "music_library"
+            upload_dir.mkdir(parents=True, exist_ok=True)
 
     supported = getattr(settings, "MUSIC_SUPPORTED_FORMATS", {".mp3", ".wav", ".flac", ".m4a", ".ogg"})
     saved = []

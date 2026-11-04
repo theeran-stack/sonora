@@ -1482,6 +1482,151 @@ class VercelAndSupabaseIntegrationTests(TestCase):
         mock_signed_url.assert_called_once()
 
 
+class DuplicatePreventionAndPlaybackTests(TestCase):
+    """
+    Comprehensive automated tests for duplicate prevention, deduplicated library display,
+    and reliable audio playback / HTTP Range streaming.
+    """
+
+    def setUp(self):
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.temp_dir, ignore_errors=True)
+
+        # Create a mock valid audio file
+        self.audio_file1 = os.path.join(self.temp_dir, "test_track_1.mp3")
+        with open(self.audio_file1, "wb") as f:
+            f.write(b"\xff\xfb\x90\x44" + b"\x00" * 4096)  # Minimal MP3 frame header + padding
+
+        # Duplicate copy in another directory
+        self.other_dir = os.path.join(self.temp_dir, "other_folder")
+        os.makedirs(self.other_dir, exist_ok=True)
+        self.audio_file1_dup = os.path.join(self.other_dir, "test_track_1.mp3")
+        shutil.copy2(self.audio_file1, self.audio_file1_dup)
+
+    def test_scanner_duplicate_prevention_same_content_hash(self):
+        """Verifies that indexing an identical audio file across folders does not create duplicate tracks."""
+        from home.scanner import index_single_file
+
+        status1, track1 = index_single_file(self.audio_file1)
+        self.assertEqual(status1, "indexed")
+        initial_count = Track.objects.count()
+
+        # Attempt to index the duplicate file in another folder
+        status2, track2 = index_single_file(self.audio_file1_dup)
+        self.assertEqual(status2, "skipped")
+        self.assertEqual(Track.objects.count(), initial_count)
+        self.assertEqual(track1.id, track2.id)
+
+    def test_scanner_repeated_scan_idempotency(self):
+        """Verifies that running scans repeatedly on the same files is strictly idempotent."""
+        from home.scanner import scan_music_library
+
+        res1 = scan_music_library(explicit_dirs=[self.temp_dir])
+        count1 = Track.objects.count()
+
+        res2 = scan_music_library(explicit_dirs=[self.temp_dir])
+        count2 = Track.objects.count()
+
+        self.assertEqual(count1, count2)
+        self.assertEqual(res2["indexed_count"], 0)
+        self.assertGreaterEqual(res2["skipped_count"], 1)
+
+    def test_views_deduplicate_tracks_for_display(self):
+        """Verifies that deduplicate_tracks_for_display groups identical tracks and selects the active one."""
+        from home.views import deduplicate_tracks_for_display
+
+        t1 = Track.objects.create(
+            title="Raathu Raasan - MassTamilan",
+            artist="Sai Abhyankkar",
+            album="Karuppu",
+            duration_seconds=210.0,
+            duration_formatted="3:30",
+            file_path=r"C:\NonExistent\Documents\My musicc\Raathu Raasan.mp3",
+            file_size=6500000,
+            file_hash="",
+            is_available=True,
+        )
+        t2 = Track.objects.create(
+            title="Raathu Raasan - MassTamilan",
+            artist="Sai Abhyankkar",
+            album="Karuppu",
+            duration_seconds=210.0,
+            duration_formatted="3:30",
+            file_path=self.audio_file1,
+            file_size=6500000,
+            file_hash="a6d7d8e95b5192fade7241421571d8c55023a2b5bc9ab23dc92cb17539be5f31",
+            is_available=True,
+        )
+
+        all_tracks = [t1, t2]
+        deduped = deduplicate_tracks_for_display(all_tracks)
+        self.assertEqual(len(deduped), 1)
+        self.assertEqual(deduped[0].id, t2.id)
+
+    def test_stream_audio_full_and_range_requests(self):
+        """Verifies that stream_audio supports HTTP 200 and HTTP 206 Range requests with proper headers."""
+        track = Track.objects.create(
+            title="Playback Stream Test Track",
+            artist="Playback Artist",
+            file_path=self.audio_file1,
+            file_size=os.path.getsize(self.audio_file1),
+            is_available=True,
+        )
+
+        # Full GET request (HTTP 200)
+        resp200 = self.client.get(f"/stream/{track.id}/")
+        self.assertEqual(resp200.status_code, 200)
+        self.assertEqual(resp200["Content-Type"], "audio/mpeg")
+        self.assertEqual(resp200["Accept-Ranges"], "bytes")
+        self.assertEqual(resp200["Access-Control-Allow-Origin"], "*")
+
+        # Range request (HTTP 206 Partial Content)
+        resp206 = self.client.get(f"/stream/{track.id}/", HTTP_RANGE="bytes=0-100")
+        self.assertEqual(resp206.status_code, 206)
+        self.assertEqual(resp206["Content-Type"], "audio/mpeg")
+        self.assertEqual(resp206["Content-Length"], "101")
+        self.assertTrue(resp206["Content-Range"].startswith("bytes 0-100/"))
+
+    def test_stream_audio_newly_added_portable_fallback(self):
+        """Verifies that a track with a Windows path plays when the file exists in media/music/."""
+        # Create a mock file in settings.BASE_DIR / media / music
+        media_music = settings.BASE_DIR / "media" / "music"
+        media_music.mkdir(parents=True, exist_ok=True)
+        test_song_path = media_music / "newly_added_song.mp3"
+        with open(test_song_path, "wb") as f:
+            f.write(b"\xff\xfb\x90\x44" + b"\x00" * 2048)
+        self.addCleanup(lambda: test_song_path.unlink(missing_ok=True))
+
+        track = Track.objects.create(
+            title="Newly Added Song",
+            artist="New Artist",
+            file_path=r"C:\Users\Theeran\Documents\My musicc\newly_added_song.mp3",
+            file_size=2052,
+            is_available=True,
+        )
+
+        resp = self.client.get(f"/stream/{track.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "audio/mpeg")
+
+    def test_stream_audio_missing_file_useful_error(self):
+        """Verifies that truly missing files return a structured 404 with ERR_LOCAL_TRACK_OFFLINE."""
+        track = Track.objects.create(
+            title="Completely Missing Offline Track",
+            artist="Ghost Artist",
+            file_path=r"C:\Impossible\Path\NonexistentSongXYZ123.mp3",
+            is_available=True,
+        )
+
+        resp = self.client.get(f"/stream/{track.id}/")
+        self.assertEqual(resp.status_code, 404)
+        data = resp.json()
+        self.assertEqual(data["error"], "ERR_LOCAL_TRACK_OFFLINE")
+        self.assertEqual(data["track_id"], track.id)
+
+
+
 
 
 

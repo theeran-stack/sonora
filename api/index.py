@@ -29,35 +29,18 @@ if os.getenv("VERCEL"):
 
 try:
     from django.core.wsgi import get_wsgi_application
-    _django_app = get_wsgi_application()
+    app = get_wsgi_application()
 except Exception as exc:
     import traceback
     tb = traceback.format_exc()
     print(f"Error initializing Django WSGI application on Vercel: {tb}", file=sys.stderr)
-    def _django_app(environ, start_response):
+    def app(environ, start_response):
         start_response('500 Internal Server Error', [('Content-Type', 'text/html; charset=utf-8')])
         html = f"""<!DOCTYPE html>
 <html>
 <head><title>SONORA - Serverless Initialization Error</title></head>
 <body style="font-family:sans-serif;background:#0f172a;color:#f8fafc;padding:40px;line-height:1.5;">
 <h2>SONORA Serverless Initialization Error</h2>
-<pre style="background:#1e293b;padding:16px;border-radius:8px;overflow:auto;color:#ef4444;">{tb}</pre>
-</body></html>"""
-        return [html.encode("utf-8")]
-
-def app(environ, start_response):
-    try:
-        return _django_app(environ, start_response)
-    except Exception as exc:
-        import traceback
-        tb = traceback.format_exc()
-        print(f"Unhandled request error on Vercel: {tb}", file=sys.stderr)
-        start_response('500 Internal Server Error', [('Content-Type', 'text/html; charset=utf-8')])
-        html = f"""<!DOCTYPE html>
-<html>
-<head><title>SONORA - Request Error</title></head>
-<body style="font-family:sans-serif;background:#0f172a;color:#f8fafc;padding:40px;line-height:1.5;">
-<h2>SONORA Serverless Request Error</h2>
 <pre style="background:#1e293b;padding:16px;border-radius:8px;overflow:auto;color:#ef4444;">{tb}</pre>
 </body></html>"""
         return [html.encode("utf-8")]

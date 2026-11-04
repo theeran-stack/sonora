@@ -215,6 +215,12 @@ def get_or_create_track_artwork(track, is_safe_path_fn=None):
     cache_mime = cache_dir / f"track_{track.id}.mime"
 
     audio_path = Path(track.file_path) if track.file_path else None
+    if not (audio_path and audio_path.exists()) and track.file_path:
+        fname = re.split(r"[\\/]", track.file_path)[-1]
+        bundled = settings.BASE_DIR / "media" / "music" / fname
+        if bundled.exists() and bundled.is_file():
+            audio_path = bundled
+
     audio_mtime = audio_path.stat().st_mtime if (audio_path and audio_path.exists()) else 0
 
     # 1. Check existing valid cache in media/covers/ and .cover_cache

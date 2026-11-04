@@ -75,13 +75,23 @@
 
   let T = [];
   if (initialRaw && initialRaw.length > 0) {
-    T = initialRaw.map((t, i) => {
+    const seenTracks = new Map();
+    initialRaw.forEach((t, i) => {
       const durSec = parseDuration(t.duration || t.dur);
-      const h = 8 + ((i * 7) % 34);
+      const normTitle = (t.title || 'Untitled').trim().toLowerCase();
+      const normArtist = (t.artist || 'Unknown artist').trim().toLowerCase();
+      const dedupeKey = t.file_hash ? `hash:${t.file_hash}` : `${normTitle}::${normArtist}::${durSec}`;
+
+      if (seenTracks.has(dedupeKey)) {
+        return; // Prevent duplicate display in player and library
+      }
+      seenTracks.set(dedupeKey, true);
+
+      const h = 8 + ((seenTracks.size * 7) % 34);
       const dbId = t.id !== undefined ? t.id : i;
       const gradient = t.cover_fallback || (t.cover && !t.cover.startsWith('http') && !t.cover.startsWith('/')
         ? t.cover
-        : (i % 3 === 2
+        : (seenTracks.size % 3 === 2
             ? 'linear-gradient(135deg,hsl(30 6% 24%),hsl(30 8% 52%))'
             : `linear-gradient(135deg,hsl(${h} 85% 50%),hsl(${h + 20} 92% 62%))`));
 
@@ -94,8 +104,8 @@
         : `/stream/${dbId}/`;
 
       const key = `${t.title}::${t.artist}`;
-      return {
-        id: i,
+      T.push({
+        id: T.length,
         key: key,
         db_id: dbId,
         title: t.title || 'Untitled',
@@ -110,7 +120,7 @@
         source_type: t.source_type || 'local',
         format: t.format || 'MP3',
         h: h
-      };
+      });
     });
   } else {
     T = DEFAULT_TRACKS.map(t => ({ ...t, key: `${t.title}::${t.artist}`, cover_fallback: t.g }));
