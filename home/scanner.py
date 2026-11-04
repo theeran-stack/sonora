@@ -25,7 +25,12 @@ class ScanState:
         self.indexed_count = 0
         self.skipped_count = 0
         self.missing_count = 0
+        self.failed_count = 0
         self.total_tracks = 0
+        self.pending_sync_count = 0
+        self.sync_status = "synced"  # synced, syncing, offline, pending
+        self.helper_connected = False
+        self.helper_last_seen = 0.0
         self.last_scan = None
         self.message = ""
         self.errors = []
@@ -39,6 +44,7 @@ class ScanState:
             self.indexed_count = 0
             self.skipped_count = 0
             self.missing_count = 0
+            self.failed_count = 0
             self.message = "Scan started..."
             self.errors = []
 
@@ -50,6 +56,7 @@ class ScanState:
             self.indexed_count = 0
             self.skipped_count = 0
             self.missing_count = 0
+            self.failed_count = 0
             self.message = ""
             self.errors = []
 
@@ -59,13 +66,29 @@ class ScanState:
             if discovered:
                 self.discovered_count = discovered
 
-    def finish(self, total, indexed=0, skipped=0, missing=0, message="", errors=None):
+    def update_sync_state(self, sync_status=None, pending_count=None, helper_connected=None):
+        with self._lock:
+            if sync_status is not None:
+                self.sync_status = sync_status
+            if pending_count is not None:
+                self.pending_sync_count = pending_count
+            if helper_connected is not None:
+                self.helper_connected = helper_connected
+
+    def touch_helper(self):
+        with self._lock:
+            import time
+            self.helper_last_seen = time.time()
+            self.helper_connected = True
+
+    def finish(self, total, indexed=0, skipped=0, missing=0, failed=0, message="", errors=None):
         with self._lock:
             self.is_scanning = False
             self.total_tracks = total
             self.indexed_count = indexed
             self.skipped_count = skipped
             self.missing_count = missing
+            self.failed_count = failed
             self.last_scan = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.message = message
             if errors:
@@ -73,7 +96,13 @@ class ScanState:
 
     def to_dict(self):
         with self._lock:
+            import time
             current_total = self.total_tracks if self.is_scanning else Track.objects.count()
+            # If helper hasn't been seen in > 60s and we're not scanning, check connected flag
+            is_helper_alive = self.helper_connected
+            if self.helper_last_seen > 0:
+                is_helper_alive = (time.time() - self.helper_last_seen) < 65
+
             return {
                 "is_scanning": self.is_scanning,
                 "scanned_count": self.scanned_count,
@@ -81,7 +110,11 @@ class ScanState:
                 "indexed_count": self.indexed_count,
                 "skipped_count": self.skipped_count,
                 "missing_count": self.missing_count,
+                "failed_count": self.failed_count,
                 "total_tracks": current_total,
+                "pending_sync_count": self.pending_sync_count,
+                "sync_status": self.sync_status,
+                "helper_connected": is_helper_alive,
                 "last_scan": self.last_scan,
                 "message": self.message,
                 "errors": self.errors[-5:] if self.errors else [],
@@ -170,6 +203,7 @@ def extract_metadata(file_path):
     has_cover = False
     fmt = path_obj.suffix.lower()
 
+    track_number = ""
     try:
         audio = mutagen.File(str(path_obj))
         if audio is not None:
@@ -204,6 +238,18 @@ def extract_metadata(file_path):
                     if val:
                         genre = str(val[0] if isinstance(val, (list, tuple)) else val).strip()
                         if genre:
+                            break
+
+                for num_key in ['tracknumber', 'TRCK', 'trkn', 'TRACKNUMBER', 'track']:
+                    val = tags.get(num_key)
+                    if val is not None:
+                        if isinstance(val, (list, tuple)) and len(val) > 0:
+                            val = val[0]
+                        if isinstance(val, tuple) and len(val) > 0:
+                            val = val[0]
+                        num_str = str(val).split('/')[0].strip()
+                        if num_str.isdigit():
+                            track_number = num_str
                             break
 
             # Cover detection
@@ -252,6 +298,7 @@ def extract_metadata(file_path):
         "format": fmt,
         "tag": tag,
         "has_cover": has_cover,
+        "track_number": track_number,
     }
 
 
@@ -369,6 +416,7 @@ def scan_music_library(explicit_dirs=None):
     indexed_count = 0
     skipped_count = 0
     missing_count = 0
+    failed_count = 0
 
     try:
         # Collect all valid audio files
@@ -401,7 +449,7 @@ def scan_music_library(explicit_dirs=None):
                 msg += " (No configured directories were accessible on this host)."
             logger.info(msg)
             total = Track.objects.count()
-            SCAN_STATE.finish(total=total, indexed=0, skipped=0, missing=0, message=msg, errors=errors)
+            SCAN_STATE.finish(total=total, indexed=0, skipped=0, missing=0, failed=0, message=msg, errors=errors)
             return SCAN_STATE.to_dict()
 
         # Index each discovered file
@@ -417,6 +465,7 @@ def scan_music_library(explicit_dirs=None):
             elif status == "skipped":
                 skipped_count += 1
             elif status == "error":
+                failed_count += 1
                 errors.append(f"Failed to index {fpath}")
 
             count += 1
@@ -433,12 +482,13 @@ def scan_music_library(explicit_dirs=None):
                         missing_count += 1
 
         total = Track.objects.filter(is_available=True).count()
-        success_msg = f"Scan complete: {len(discovered_files)} found, {indexed_count} indexed/updated, {skipped_count} skipped, {missing_count} marked missing."
+        success_msg = f"Scan complete: {len(discovered_files)} found, {indexed_count} indexed/updated, {skipped_count} skipped, {failed_count} failed, {missing_count} marked missing."
         SCAN_STATE.finish(
             total=total,
             indexed=indexed_count,
             skipped=skipped_count,
             missing=missing_count,
+            failed=failed_count,
             message=success_msg,
             errors=errors,
         )
@@ -449,7 +499,7 @@ def scan_music_library(explicit_dirs=None):
         errors.append(err_msg)
         logger.error(err_msg, exc_info=True)
         total = Track.objects.count()
-        SCAN_STATE.finish(total=total, indexed=indexed_count, skipped=skipped_count, missing=missing_count, message=err_msg, errors=errors)
+        SCAN_STATE.finish(total=total, indexed=indexed_count, skipped=skipped_count, missing=missing_count, failed=failed_count, message=err_msg, errors=errors)
 
     return SCAN_STATE.to_dict()
 

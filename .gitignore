@@ -50,6 +50,9 @@ db.sqlite3-journal
 *.env
 helper/config.local.json
 *.local.json
+helper/pending_sync.json
+helper/*.pid
+helper/logs/
 
 # IDE & OS
 .idea/

@@ -430,7 +430,7 @@
         <button class="row${t.id === cur ? ' on' : ''}" data-i="${t.id}" data-track-id="${t.db_id || t.id}">
           <span class="art" style="${coverStyle}"></span>
           <span class="t"><b>${t.title}</b><span>${t.artist}</span></span>
-          <span class="al">${t.album}</span>
+          <span class="al">${t.album}${t.is_local ? ' <span class="badge-pill" style="font-size:10px;margin-left:4px;">Local</span>' : ''}</span>
           <span class="row-fav" data-fav-i="${t.id}" aria-pressed="${isFav}" aria-label="Favorite">
             <svg viewBox="0 0 24 24"><path d="M12 21s-8-5-8-11a4.5 4.5 0 018-2.5A4.5 4.5 0 0120 10c0 6-8 11-8 11z"/></svg>
           </span>
@@ -558,6 +558,13 @@
   au.onerror = e => {
     console.error('Audio playback error on track:', T[cur], au.error);
     setPlay(false);
+    const t = T[cur];
+    if (t && t.is_local) {
+      if ($('pArtist')) $('pArtist').textContent = `${t.artist} (Offline Local Track)`;
+      if ($('hSub')) {
+        $('hSub').innerHTML = `${t.artist} — <span style="color:var(--rose);">Stored locally on laptop. Run Sonora Helper or upload to stream.</span>`;
+      }
+    }
   };
 
   function next() {
@@ -1191,15 +1198,68 @@
     } catch (e) {}
   }
 
-  // Scan music button integration
+  // Scan music button & telemetry integration
   const scanBtn = $('scanBtn');
+  let isScanningActive = false;
+
+  function updateTelemetry(data) {
+    if (!data) return;
+
+    if ($('chipDiscovered')) $('chipDiscovered').textContent = data.discovered_count || 0;
+    if ($('chipIndexed')) $('chipIndexed').textContent = data.indexed_count || 0;
+    if ($('chipSkipped')) $('chipSkipped').textContent = data.skipped_count || 0;
+    if ($('chipFailed')) $('chipFailed').textContent = data.failed_count || 0;
+    if ($('chipPending')) $('chipPending').textContent = data.pending_sync_count || 0;
+    if ($('scanNum')) $('scanNum').textContent = `${data.total_tracks || 0} tracks`;
+
+    const helperDot = $('helperDot');
+    const helperText = $('helperStatusText');
+    const notice = $('helperNotice');
+
+    if (data.helper_connected) {
+      if (helperDot) helperDot.className = 'status-dot dot-online';
+      if (helperText) helperText.textContent = data.mode === 'local' ? 'Local Service: Ready' : 'Helper: Online';
+      if (notice) notice.style.display = 'none';
+    } else {
+      if (helperDot) helperDot.className = 'status-dot dot-offline';
+      if (helperText) helperText.textContent = 'Helper: Offline';
+    }
+
+    const syncText = $('syncStatusText');
+    const syncStatus = data.sync_status || 'synced';
+    if (syncText) {
+      if (syncStatus === 'synced') syncText.textContent = 'Sync: Up to date';
+      else if (syncStatus === 'syncing') syncText.textContent = 'Sync: Syncing…';
+      else if (syncStatus === 'offline') syncText.textContent = 'Sync: Offline (Queued)';
+      else if (syncStatus === 'pending') syncText.textContent = `Sync: Pending (${data.pending_sync_count || 0})`;
+      else syncText.textContent = `Sync: ${syncStatus}`;
+    }
+  }
+
+  // Initial telemetry fetch
+  fetch('/api/scan-status/')
+    .then(r => r.json())
+    .then(updateTelemetry)
+    .catch(() => {});
+
+  // Periodic telemetry polling
+  setInterval(() => {
+    if (!isScanningActive) {
+      fetch('/api/scan-status/')
+        .then(r => r.json())
+        .then(updateTelemetry)
+        .catch(() => {});
+    }
+  }, 10000);
+
   if (scanBtn) {
     let pollTimer = null;
     scanBtn.onclick = () => {
       scanBtn.disabled = true;
+      isScanningActive = true;
       if ($('scanTitle')) $('scanTitle').textContent = 'Scanning your music folder';
-      if ($('scanSub')) $('scanSub').textContent = 'Scanning configured music library folders...';
-      if ($('scanBar')) $('scanBar').style.width = '25%';
+      if ($('scanSub')) $('scanSub').textContent = 'Discovering audio files and reading Mutagen metadata...';
+      if ($('scanBar')) $('scanBar').style.width = '20%';
 
       fetch('/api/scan/', {
         method: 'POST',
@@ -1209,33 +1269,49 @@
         }
       })
       .then(r => r.json())
-      .then(() => {
-        let progress = 30;
+      .then(initialResp => {
+        if (initialResp.mode === 'hosted' && initialResp.data && !initialResp.data.helper_connected) {
+          const notice = $('helperNotice');
+          if (notice) notice.style.display = 'block';
+        }
+
+        let progress = 25;
         pollTimer = setInterval(() => {
           fetch('/api/scan-status/')
             .then(r => r.json())
             .then(data => {
+              updateTelemetry(data);
               if (data.is_scanning) {
-                progress = Math.min(progress + 15, 90);
+                progress = Math.min(progress + 12, 92);
                 if ($('scanBar')) $('scanBar').style.width = progress + '%';
-                if ($('scanSub')) $('scanSub').textContent = `Reading metadata… ${data.scanned_count || 0} files found`;
+                if ($('scanSub')) $('scanSub').textContent = data.message || `Reading metadata… ${data.scanned_count || 0} of ${data.discovered_count || 0} files`;
               } else {
                 clearInterval(pollTimer);
+                isScanningActive = false;
                 scanBtn.disabled = false;
                 if ($('scanBar')) $('scanBar').style.width = '100%';
                 if ($('scanTitle')) $('scanTitle').textContent = 'Scan complete';
-                if ($('scanSub')) $('scanSub').textContent = `Library updated: ${data.total_tracks || 0} tracks available`;
+                const summary = `${data.discovered_count || 0} discovered · ${data.indexed_count || 0} indexed · ${data.skipped_count || 0} skipped · ${data.failed_count || 0} failed`;
+                if ($('scanSub')) $('scanSub').textContent = summary;
                 if ($('scanNum')) $('scanNum').textContent = `${data.total_tracks || 0} tracks`;
+
                 setTimeout(() => {
                   if ($('scanBar')) $('scanBar').style.width = '0';
-                  window.location.reload();
-                }, 1200);
+                  if ((data.indexed_count || 0) > 0) {
+                    window.location.reload();
+                  }
+                }, 1500);
               }
             })
-            .catch(() => clearInterval(pollTimer));
+            .catch(() => {
+              clearInterval(pollTimer);
+              isScanningActive = false;
+              scanBtn.disabled = false;
+            });
         }, 800);
       })
       .catch(() => {
+        isScanningActive = false;
         scanBtn.disabled = false;
         if ($('scanTitle')) $('scanTitle').textContent = 'Scan ready';
       });

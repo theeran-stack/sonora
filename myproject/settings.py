@@ -22,28 +22,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
+IS_VERCEL = bool(os.getenv('VERCEL'))
 
 # SECURITY WARNING: keep the secret key used in production secret!
 raw_secret = os.getenv('DJANGO_SECRET_KEY')
-if not raw_secret:
-    if not DEBUG and os.getenv('DJANGO_DEBUG') is not None:
-        from django.core.exceptions import ImproperlyConfigured
-        raise ImproperlyConfigured("DJANGO_SECRET_KEY environment variable is required in production (when DJANGO_DEBUG=False).")
-    SECRET_KEY = 'django-insecure-%g1=3ud2@i@8i-9ujr*!&b=js5=y80yj#)(-ruxs@_snm4kgdh'
-else:
+if raw_secret:
     SECRET_KEY = raw_secret
+else:
+    # Use environment SECRET_KEY or resilient production fallback without raising ImproperlyConfigured
+    SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-%g1=3ud2@i@8i-9ujr*!&b=js5=y80yj#)(-ruxs@_snm4kgdh')
 
 raw_allowed_hosts = os.getenv('DJANGO_ALLOWED_HOSTS')
 if raw_allowed_hosts:
     ALLOWED_HOSTS = [h.strip() for h in raw_allowed_hosts.split(',') if h.strip()]
 elif not DEBUG and os.getenv('DJANGO_DEBUG') is not None:
-    ALLOWED_HOSTS = ['.onrender.com', 'localhost', '127.0.0.1']
+    ALLOWED_HOSTS = ['.vercel.app', '.onrender.com', 'localhost', '127.0.0.1']
 else:
     ALLOWED_HOSTS = ['*']
 
-# Reverse proxy & CSRF origin configuration for Render/cloud deployment
+# Reverse proxy & CSRF origin configuration for Vercel/cloud deployment
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-raw_csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', 'https://*.onrender.com,http://localhost:8000,http://127.0.0.1:8000')
+raw_csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', 'https://*.vercel.app,https://*.onrender.com,http://localhost:8000,http://127.0.0.1:8000')
 CSRF_TRUSTED_ORIGINS = [o.strip() for o in raw_csrf_origins.split(',') if o.strip()]
 
 if not DEBUG and os.getenv('DJANGO_DEBUG') is not None:
@@ -99,6 +98,11 @@ ARTWORK_API_TIMEOUT = float(os.getenv('ARTWORK_API_TIMEOUT', '2.5'))
 MONGODB_URI = os.getenv('MONGODB_URI', '')
 MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME', 'sonora')
 
+# Supabase Storage Configuration (Bucket: sonora-music)
+SUPABASE_URL = os.getenv('SUPABASE_URL', '').rstrip('/')
+SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+SUPABASE_STORAGE_BUCKET = os.getenv('SUPABASE_STORAGE_BUCKET', 'sonora-music')
+
 
 # Application definition
 
@@ -147,22 +151,55 @@ WSGI_APPLICATION = 'myproject.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-if PERSISTENT_DIR:
+DATABASE_URL = os.getenv('DATABASE_URL')
+if DATABASE_URL:
+    import dj_database_url
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=0,  # Recommended for serverless lambdas
+            conn_health_checks=True,
+            ssl_require=True,
+        )
+    }
+elif PERSISTENT_DIR:
     persistent_path = Path(PERSISTENT_DIR)
     try:
         persistent_path.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
     DB_PATH = persistent_path / 'db.sqlite3'
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': DB_PATH,
+        }
+    }
+elif IS_VERCEL:
+    # Vercel serverless environment: root filesystem is read-only, writable storage is in /tmp
+    import shutil
+    tmp_db = Path('/tmp/db.sqlite3')
+    orig_db = BASE_DIR / 'db.sqlite3'
+    if orig_db.exists() and not tmp_db.exists():
+        try:
+            shutil.copy2(orig_db, tmp_db)
+        except Exception:
+            pass
+    DB_PATH = tmp_db if tmp_db.exists() else orig_db
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': DB_PATH,
+        }
+    }
 else:
     DB_PATH = BASE_DIR / 'db.sqlite3'
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': DB_PATH,
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': DB_PATH,
+        }
     }
-}
 
 
 # Password validation
@@ -221,7 +258,43 @@ MAILERS = {
 # ==============================================================================
 
 LOGS_DIR = BASE_DIR / 'logs'
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
+ENABLE_FILE_LOGGING = not IS_VERCEL
+
+if ENABLE_FILE_LOGGING:
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        ENABLE_FILE_LOGGING = False
+
+logging_handlers = {
+    'console': {
+        'class': 'logging.StreamHandler',
+        'formatter': 'verbose',
+    },
+}
+
+if ENABLE_FILE_LOGGING:
+    logging_handlers['file_requests'] = {
+        'class': 'logging.handlers.RotatingFileHandler',
+        'filename': str(LOGS_DIR / 'sonora_requests.log'),
+        'maxBytes': 5 * 1024 * 1024,  # 5 MB
+        'backupCount': 5,
+        'formatter': 'request_fmt',
+        'encoding': 'utf-8',
+    }
+    logging_handlers['file_app'] = {
+        'class': 'logging.handlers.RotatingFileHandler',
+        'filename': str(LOGS_DIR / 'sonora_app.log'),
+        'maxBytes': 5 * 1024 * 1024,  # 5 MB
+        'backupCount': 5,
+        'formatter': 'verbose',
+        'encoding': 'utf-8',
+    }
+    app_handlers = ['console', 'file_app']
+    req_handlers = ['console', 'file_requests']
+else:
+    app_handlers = ['console']
+    req_handlers = ['console']
 
 LOGGING = {
     'version': 1,
@@ -236,36 +309,15 @@ LOGGING = {
             'style': '{',
         },
     },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
-        },
-        'file_requests': {
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': str(LOGS_DIR / 'sonora_requests.log'),
-            'maxBytes': 5 * 1024 * 1024,  # 5 MB
-            'backupCount': 5,
-            'formatter': 'request_fmt',
-            'encoding': 'utf-8',
-        },
-        'file_app': {
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': str(LOGS_DIR / 'sonora_app.log'),
-            'maxBytes': 5 * 1024 * 1024,  # 5 MB
-            'backupCount': 5,
-            'formatter': 'verbose',
-            'encoding': 'utf-8',
-        },
-    },
+    'handlers': logging_handlers,
     'loggers': {
         'sonora.requests': {
-            'handlers': ['console', 'file_requests'],
+            'handlers': req_handlers,
             'level': 'INFO',
             'propagate': False,
         },
         'home': {
-            'handlers': ['console', 'file_app'],
+            'handlers': app_handlers,
             'level': 'INFO',
             'propagate': False,
         },

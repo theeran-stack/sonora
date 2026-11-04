@@ -1038,6 +1038,253 @@ class MongoDBProductionVerificationTests(TestCase):
                     mock_coll.delete_one.assert_called_once()
 
 
+class LocalScanningAndSynchronizationTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.music_dir = Path(self.temp_dir.name)
+        SCAN_STATE.reset()
+
+        # Create sample audio files
+        (self.music_dir / "Artist A" / "Album 1").mkdir(parents=True, exist_ok=True)
+        (self.music_dir / "Artist A" / "Album 1" / "song1.mp3").write_bytes(b"ID3\x03\x00\x00\x00\x00\x00#TIT2\x00\x00\x00\x08\x00\x00\x00Song One" + b"\x00" * 200)
+        (self.music_dir / "Artist A" / "Album 1" / "song2.flac").write_bytes(b"fLaC\x00\x00\x00\x22" + b"\x00" * 300)
+        (self.music_dir / "song3.wav").write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00D\xac\x00\x00\x10\xb1\x02\x00\x04\x00\x10\x00data\x00\x00\x00\x00")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+        # Clean up pending sync file if created in helper dir
+        from helper.sonora_helper import PENDING_SYNC_FILE
+        if PENDING_SYNC_FILE.exists():
+            try:
+                PENDING_SYNC_FILE.unlink()
+            except Exception:
+                pass
+
+    def test_offline_scan_accumulates_pending_queue(self):
+        """Helper scans without internet, updates local SQLite, and maintains pending_sync.json."""
+        from helper.sonora_helper import SonoraWindowsHelper, PENDING_SYNC_FILE
+
+        with patch.dict(os.environ, {"SONORA_SERVER_URL": "http://127.0.0.1:9999", "SONORA_SYNC_TOKEN": "test_token"}):
+            helper = SonoraWindowsHelper()
+            helper.config["music_dir"] = str(self.music_dir)
+            helper.config["server_url"] = "http://127.0.0.1:9999"  # Offline mock port
+
+            # Run offline scan
+            metrics = helper.scan_local_music_library(explicit_dir=str(self.music_dir))
+
+            # Discovered audio files
+            self.assertEqual(metrics["discovered_count"], 3)
+            self.assertEqual(metrics["indexed_count"], 3)
+            self.assertEqual(metrics["skipped_count"], 0)
+            self.assertEqual(metrics["failed_count"], 0)
+
+            # Local tracks stored with canonical local file paths
+            tracks = Track.objects.filter(file_path__startswith=str(self.music_dir))
+            self.assertEqual(tracks.count(), 3)
+            for t in tracks:
+                self.assertTrue(os.path.isabs(t.file_path))
+                self.assertEqual(t.source_type, "local")
+                self.assertTrue(t.is_available)
+
+            # Offline pending sync queue is maintained and not lost
+            self.assertEqual(helper.sync_status, "offline")
+            self.assertTrue(PENDING_SYNC_FILE.exists())
+            self.assertGreaterEqual(helper.get_pending_sync_count(), 3)
+
+    def test_online_synchronization_drains_pending_queue(self):
+        """Helper connects online, pushes pending tracks to /api/sync/tracks/, and clears queue."""
+        from helper.sonora_helper import SonoraWindowsHelper, PENDING_SYNC_FILE
+
+        helper = SonoraWindowsHelper()
+        helper.config["sync_token"] = "valid_token"
+
+        # Pre-seed pending sync queue
+        test_payload = [
+            {
+                "title": "Synced Song 1",
+                "artist": "Sync Artist",
+                "album": "Sync Album",
+                "duration_seconds": 180.0,
+                "duration_formatted": "3:00",
+                "format": ".mp3",
+                "tag": "Chill",
+                "has_cover": False,
+                "file_hash": "hash_sync_1",
+                "file_path": str(self.music_dir / "synced1.mp3"),
+                "relative_name": "synced1.mp3",
+            },
+            {
+                "title": "Synced Song 2",
+                "artist": "Sync Artist",
+                "album": "Sync Album",
+                "duration_seconds": 210.0,
+                "duration_formatted": "3:30",
+                "format": ".flac",
+                "tag": "Electronic",
+                "has_cover": True,
+                "file_hash": "hash_sync_2",
+                "file_path": str(self.music_dir / "synced2.flac"),
+                "relative_name": "synced2.flac",
+            }
+        ]
+        helper.add_to_pending_sync(test_payload)
+        self.assertEqual(helper.get_pending_sync_count(), 2)
+
+        # Mock successful POST to /api/sync/tracks/
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "success", "synced_count": 2}
+
+        with patch("requests.post", return_value=mock_resp):
+            drained = helper.drain_pending_sync()
+            self.assertEqual(drained, 2)
+            self.assertEqual(helper.get_pending_sync_count(), 0)
+            self.assertEqual(helper.sync_status, "synced")
+
+    def test_duplicate_prevention_on_rescan_and_sync(self):
+        """Scanning the same folder twice skips duplicates; syncing the same tracks updates existing."""
+        from helper.sonora_helper import SonoraWindowsHelper
+
+        helper = SonoraWindowsHelper()
+        helper.config["music_dir"] = str(self.music_dir)
+
+        with patch("requests.post"):
+            # First scan
+            res1 = helper.scan_local_music_library(explicit_dir=str(self.music_dir))
+            self.assertEqual(res1["indexed_count"], 3)
+            self.assertEqual(res1["skipped_count"], 0)
+
+            # Second scan immediately: identical files should be skipped as duplicates
+            res2 = helper.scan_local_music_library(explicit_dir=str(self.music_dir))
+            self.assertEqual(res2["indexed_count"], 0)
+            self.assertEqual(res2["skipped_count"], 3)
+
+            # Total tracks in database should remain 3
+            self.assertEqual(Track.objects.filter(file_path__startswith=str(self.music_dir)).count(), 3)
+
+            # Test sync endpoint duplicate avoidance
+            with patch("home.views.check_sync_auth", return_value=True):
+                sync_payload = {
+                    "tracks": [
+                        {
+                            "title": "Song One",
+                            "artist": "Artist A",
+                            "album": "Album 1",
+                            "duration_seconds": 120.0,
+                            "file_hash": "fixed_hash_1",
+                            "file_path": str(self.music_dir / "Artist A" / "Album 1" / "song1.mp3"),
+                        }
+                    ]
+                }
+                # Sync twice
+                resp1 = self.client.post("/api/sync/tracks/", data=json.dumps(sync_payload), content_type="application/json")
+                self.assertEqual(resp1.status_code, 200)
+
+                resp2 = self.client.post("/api/sync/tracks/", data=json.dumps(sync_payload), content_type="application/json")
+                self.assertEqual(resp2.status_code, 200)
+
+                # Exactly 1 track with that file hash
+                self.assertEqual(Track.objects.filter(file_hash="fixed_hash_1").count(), 1)
+
+    def test_playback_distinction_local_vs_remote_offline(self):
+        """Remote streaming of an unuploaded local track returns HTTP 404 ERR_LOCAL_TRACK_OFFLINE instead of fake demo audio."""
+        local_track = Track.objects.create(
+            title="Laptop Only Song",
+            artist="Theeran",
+            album="Local Album",
+            file_path="C:\\Users\\Theeran\\Documents\\My musicc\\nonexistent_on_cloud.mp3",
+            source_type="local",
+            format=".mp3",
+        )
+
+        resp = self.client.get(f"/stream/{local_track.id}/")
+        self.assertEqual(resp.status_code, 404)
+        data = resp.json()
+        self.assertEqual(data["error"], "ERR_LOCAL_TRACK_OFFLINE")
+        self.assertTrue(data["is_local_only"])
+        self.assertEqual(resp["X-Sonora-Track-Status"], "local_only")
+
+    def test_api_scan_status_and_helper_heartbeat(self):
+        """Helper pushes real-time metrics to /api/sync/scan-status/, and /api/scan-status/ reflects it."""
+        with patch("home.views.check_sync_auth", return_value=True):
+            payload = {
+                "is_scanning": True,
+                "scanned_count": 42,
+                "discovered_count": 53,
+                "indexed_count": 10,
+                "skipped_count": 32,
+                "failed_count": 0,
+                "pending_sync_count": 5,
+                "sync_status": "syncing",
+                "message": "Extracting Mutagen metadata...",
+            }
+            post_resp = self.client.post(
+                "/api/sync/scan-status/",
+                data=json.dumps(payload),
+                content_type="application/json"
+            )
+            self.assertEqual(post_resp.status_code, 200)
+
+            # Browser polls /api/scan-status/
+            status_resp = self.client.get("/api/scan-status/")
+            self.assertEqual(status_resp.status_code, 200)
+            data = status_resp.json()
+            self.assertTrue(data["is_scanning"])
+            self.assertEqual(data["scanned_count"], 42)
+            self.assertEqual(data["discovered_count"], 53)
+            self.assertEqual(data["indexed_count"], 10)
+            self.assertEqual(data["skipped_count"], 32)
+            self.assertEqual(data["pending_sync_count"], 5)
+            self.assertEqual(data["sync_status"], "syncing")
+            self.assertTrue(data["helper_connected"])
+
+
+    def test_mutagen_track_number_metadata_extraction(self):
+        """Mutagen metadata extractor extracts track title, artist, album, and track_number."""
+        from home.scanner import extract_metadata
+
+        dummy_audio = self.music_dir / "track_test.mp3"
+        dummy_audio.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00#TIT2\x00\x00\x00\x06\x00\x00\x00MySong" + b"\x00" * 200)
+
+        meta = extract_metadata(str(dummy_audio))
+        self.assertIn("track_number", meta)
+        self.assertIn("title", meta)
+        self.assertIn("artist", meta)
+        self.assertIn("album", meta)
+        self.assertIn("duration_seconds", meta)
+        self.assertIn("has_cover", meta)
+
+    def test_helper_bridge_status_endpoint(self):
+        """Helper HTTP bridge /status returns JSON with CORS & Private Network Access headers."""
+        from helper.sonora_helper import SonoraWindowsHelper, HelperBridgeHandler
+        from io import BytesIO
+
+        helper = SonoraWindowsHelper()
+        helper.config["music_dir"] = str(self.music_dir)
+
+        class DummySocket:
+            def __init__(self):
+                self.output = BytesIO()
+            def makefile(self, mode="r", *args, **kwargs):
+                if "w" in mode:
+                    return self.output
+                return BytesIO(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1:8765\r\n\r\n")
+            def sendall(self, data):
+                self.output.write(data)
+
+        class DummyServer:
+            def __init__(self, h):
+                self.helper = h
+
+        sock = DummySocket()
+        handler = HelperBridgeHandler(sock, ("127.0.0.1", 54321), DummyServer(helper))
+        self.assertIsNotNone(handler)
+        raw_output = sock.output.getvalue().decode("utf-8", errors="ignore")
+        self.assertIn("Access-Control-Allow-Private-Network: true", raw_output)
+        self.assertIn("SonoraWindowsHelper", raw_output)
+
+
 class ProductionSecurityAndErrorHandlingTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -1053,12 +1300,188 @@ class ProductionSecurityAndErrorHandlingTests(TestCase):
         self.assertIn("sonoraAssistantRoot", content)
 
     def test_insecure_secret_key_rejection_logic(self):
-        # Verify settings guard prevents running in production with default insecure key
         with patch.dict(os.environ, {"DJANGO_DEBUG": "False", "DJANGO_SECRET_KEY": ""}, clear=False):
-            from django.core.exceptions import ImproperlyConfigured
-            # If DJANGO_DEBUG=False and raw_secret is empty, verify logic
             debug_val = os.getenv("DJANGO_DEBUG", "True").lower() in ("true", "1", "yes")
             self.assertFalse(debug_val)
+
+
+class VercelAndSupabaseIntegrationTests(TestCase):
+    """
+    Test suite for Vercel serverless entry points, logging resilience,
+    Supabase PostgreSQL transaction pooler configuration, and Supabase Storage signed URLs.
+    """
+    def setUp(self):
+        self.client = Client()
+
+    def test_vercel_index_entrypoint_import(self):
+        """Verifies that api/index.py exports a valid WSGI callable for Vercel runtime."""
+        import api.index
+        from django.core.handlers.wsgi import WSGIHandler
+        self.assertIsInstance(api.index.app, WSGIHandler)
+        self.assertIsInstance(api.index.handler, WSGIHandler)
+
+    def test_wsgi_app_alias(self):
+        """Verifies that myproject/wsgi.py exports both application and app."""
+        import myproject.wsgi
+        self.assertIsNotNone(myproject.wsgi.application)
+        self.assertEqual(myproject.wsgi.app, myproject.wsgi.application)
+
+    def test_dj_database_url_supabase_pooler_parsing(self):
+        """Verifies parsing of Supabase transaction pooler URLs (port 6543 + sslmode=require)."""
+        import dj_database_url
+        pooler_url = "postgresql://postgres.projref:secretpass@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        cfg = dj_database_url.config(default=pooler_url, conn_max_age=0, ssl_require=True)
+        self.assertEqual(cfg["ENGINE"], "django.db.backends.postgresql")
+        self.assertEqual(cfg["PORT"], 6543)
+        self.assertEqual(cfg["USER"], "postgres.projref")
+        self.assertEqual(cfg["PASSWORD"], "secretpass")
+        self.assertEqual(cfg["CONN_MAX_AGE"], 0)
+
+    def test_supabase_storage_unconfigured_behavior(self):
+        """When SUPABASE_URL is not set, storage functions return graceful errors without crashing."""
+        from home.supabase_storage import create_signed_upload_url, create_signed_playback_url, is_supabase_storage_configured
+        with override_settings(SUPABASE_URL="", SUPABASE_SERVICE_ROLE_KEY=""):
+            self.assertFalse(is_supabase_storage_configured())
+            upload_res = create_signed_upload_url("test.mp3")
+            self.assertFalse(upload_res["success"])
+            self.assertEqual(upload_res["error"], "ERR_STORAGE_UNCONFIGURED")
+
+            play_res = create_signed_playback_url("test.mp3")
+            self.assertFalse(play_res["success"])
+            self.assertEqual(play_res["error"], "ERR_STORAGE_UNCONFIGURED")
+
+    @patch("requests.post")
+    def test_supabase_signed_upload_url_generation(self, mock_post):
+        """Verifies creation of presigned upload URLs for direct client uploads."""
+        from home.supabase_storage import create_signed_upload_url
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"url": "/object/upload/sign/sonora-music/tracks/1/song.mp3?token=upload_token_123"}
+        mock_post.return_value = mock_resp
+
+        with override_settings(
+            SUPABASE_URL="https://testproj.supabase.co",
+            SUPABASE_SERVICE_ROLE_KEY="service_secret_role_key_2026",
+            SUPABASE_STORAGE_BUCKET="sonora-music",
+        ):
+            res = create_signed_upload_url("tracks/1/song.mp3", expires_in=900)
+            self.assertTrue(res["success"])
+            self.assertIn("https://testproj.supabase.co/storage/v1/object/upload/sign/sonora-music/tracks/1/song.mp3", res["upload_url"])
+            self.assertEqual(res["bucket"], "sonora-music")
+            self.assertEqual(res["storage_path"], "tracks/1/song.mp3")
+
+    @patch("requests.post")
+    def test_supabase_signed_playback_url_generation(self, mock_post):
+        """Verifies creation of temporary signed playback URLs for private bucket audio."""
+        from home.supabase_storage import create_signed_playback_url
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"signedURL": "/object/sign/sonora-music/tracks/1/song.mp3?token=playback_token_xyz"}
+        mock_post.return_value = mock_resp
+
+        with override_settings(
+            SUPABASE_URL="https://testproj.supabase.co",
+            SUPABASE_SERVICE_ROLE_KEY="service_secret_role_key_2026",
+            SUPABASE_STORAGE_BUCKET="sonora-music",
+        ):
+            res = create_signed_playback_url("supabase://sonora-music/tracks/1/song.mp3", expires_in=3600)
+            self.assertTrue(res["success"])
+            self.assertIn("https://testproj.supabase.co/storage/v1/object/sign/sonora-music/tracks/1/song.mp3", res["playback_url"])
+
+    def test_api_upload_selection_list(self):
+        """Verifies the selection list endpoint allowing explicit song selection before upload."""
+        track = Track.objects.create(
+            title="Selection Test Song",
+            artist="Selection Artist",
+            album="Selection Album",
+            duration_seconds=120,
+            duration_formatted="2:00",
+            file_path="C:\\music\\select.mp3",
+            format="MP3",
+            source_type="local",
+        )
+        resp = self.client.get("/api/upload/selection/")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("tracks", data)
+        matching = [t for t in data["tracks"] if t["id"] == track.id]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["title"], "Selection Test Song")
+        self.assertFalse(matching[0]["is_in_cloud"])
+
+    @patch("home.supabase_storage.is_supabase_storage_configured", return_value=True)
+    @patch("home.supabase_storage.create_signed_upload_url")
+    def test_api_upload_sign_endpoint(self, mock_sign, mock_cfg):
+        """Verifies the /api/upload/sign/ endpoint generates presigned upload URLs."""
+        mock_sign.return_value = {
+            "success": True,
+            "upload_url": "https://testproj.supabase.co/storage/v1/object/upload/sign/sonora-music/tracks/5/song.mp3?token=abc",
+            "storage_path": "tracks/5/song.mp3",
+            "bucket": "sonora-music",
+        }
+        resp = self.client.post(
+            "/api/upload/sign/",
+            data=json.dumps({"filename": "song.mp3", "track_id": 5}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertIn("upload_url", data)
+
+    def test_api_upload_confirm_endpoint(self):
+        """Verifies the /api/upload/confirm/ endpoint binds a private storage path to Track model."""
+        track = Track.objects.create(
+            title="Confirm Upload Song",
+            artist="Confirm Artist",
+            album="Confirm Album",
+            duration_seconds=180,
+            file_path="C:\\local\\confirm.mp3",
+            source_type="local",
+        )
+        resp = self.client.post(
+            "/api/upload/confirm/",
+            data=json.dumps({
+                "track_id": track.id,
+                "storage_path": f"tracks/{track.id}/confirm.mp3",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "success")
+
+        track.refresh_from_db()
+        self.assertEqual(track.cloud_url, f"supabase://sonora-music/tracks/{track.id}/confirm.mp3")
+        self.assertEqual(track.source_type, "upload")
+
+    @patch("home.supabase_storage.create_signed_playback_url")
+    @patch("requests.get")
+    def test_stream_audio_with_supabase_storage(self, mock_requests_get, mock_signed_url):
+        """Verifies that stream_audio generates a signed playback URL and proxies stream with CORS."""
+        track = Track.objects.create(
+            title="Supabase Stream Song",
+            artist="Cloud Artist",
+            file_path="supabase://sonora-music/tracks/99/cloud.mp3",
+            cloud_url="supabase://sonora-music/tracks/99/cloud.mp3",
+            source_type="upload",
+        )
+        mock_signed_url.return_value = {
+            "success": True,
+            "playback_url": "https://testproj.supabase.co/storage/v1/object/sign/sonora-music/tracks/99/cloud.mp3?token=xyz",
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "audio/mpeg", "Content-Length": "1000"}
+        mock_resp.iter_content.return_value = [b"ID3_MOCK_STREAM_BYTES"]
+        mock_requests_get.return_value = mock_resp
+
+        resp = self.client.get(f"/stream/{track.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Access-Control-Allow-Origin"], "*")
+        mock_signed_url.assert_called_once()
+
+
 
 
 

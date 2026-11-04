@@ -391,10 +391,17 @@ svg {
   border-radius: var(--r-m);
   padding: 18px 20px;
   margin-bottom: 28px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scan-header {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .scan strong {
@@ -405,8 +412,94 @@ svg {
   color: var(--mute);
 }
 
+.scan-telemetry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.scan-metrics-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-radius: var(--r-s);
+  border: 1px solid var(--line);
+}
+
+.metric-chip {
+  font-size: 11px;
+  font-family: var(--head);
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--mute);
+  border: 1px solid var(--line);
+}
+
+.metric-chip b {
+  color: var(--fg);
+  margin-left: 2px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.dot-online {
+  background: var(--mint, #55E6C1);
+  box-shadow: 0 0 6px rgba(85, 230, 193, 0.6);
+}
+
+.dot-offline {
+  background: var(--rose, #F43F5E);
+  box-shadow: 0 0 6px rgba(244, 63, 94, 0.4);
+}
+
+.dot-syncing {
+  background: var(--orange, #FB923C);
+  animation: pulse 1s infinite alternate;
+}
+
+.helper-notice {
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+  border-radius: var(--r-s);
+  padding: 12px 16px;
+  margin-top: 4px;
+}
+
+.helper-notice strong {
+  color: var(--rose, #F43F5E);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.helper-notice p {
+  font-size: 13px;
+  color: var(--mute);
+  margin: 0 0 8px 0;
+}
+
+.helper-notice code {
+  background: var(--bg);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  font-family: monospace;
+  color: var(--violet, #8B7CFF);
+  font-size: 12px;
+}
+
 .bar {
-  grid-column: 1/-1;
   height: 6px;
   border-radius: 9px;
   background: var(--bg);

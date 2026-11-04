@@ -91,12 +91,38 @@
   </section>
 
   <section class="scan" aria-live="polite">
-   <div>
-    <strong id="scanTitle">Library is up to date</strong><br>
-    <small id="scanSub">{{ music_dir|default:"Music Library" }}</small>
+   <div class="scan-header">
+    <div>
+     <strong id="scanTitle">Library is up to date</strong><br>
+     <small id="scanSub">{{ music_dir|default:"Music Library" }}</small>
+    </div>
+    <div class="scan-telemetry">
+     <span class="badge-pill" id="helperBadge" title="Local Windows Helper Status">
+      <span class="status-dot dot-offline" id="helperDot"></span>
+      <span id="helperStatusText">Checking Helper...</span>
+     </span>
+     <span class="badge-pill" id="syncBadge" title="Hosted Synchronization Status">
+      <span id="syncStatusText">Sync: Synced</span>
+     </span>
+     <small id="scanNum">{{ tracks|length }} tracks</small>
+    </div>
    </div>
-   <small id="scanNum">{{ tracks|length }} tracks</small>
+
+   <div class="scan-metrics-bar" id="scanMetricsBar">
+    <span class="metric-chip">Discovered: <b id="chipDiscovered">0</b></span>
+    <span class="metric-chip">Indexed: <b id="chipIndexed">0</b></span>
+    <span class="metric-chip">Skipped: <b id="chipSkipped">0</b></span>
+    <span class="metric-chip">Failed: <b id="chipFailed">0</b></span>
+    <span class="metric-chip">Pending Sync: <b id="chipPending">0</b></span>
+   </div>
+
    <div class="bar" role="progressbar" aria-label="Scan progress"><b id="scanBar"></b></div>
+
+   <div id="helperNotice" class="helper-notice" style="display:none;">
+    <strong>Windows Helper Offline</strong>
+    <p>To scan your local folder (<code>{{ music_dir }}</code>) and synchronize songs with Sonora, start the Sonora Windows Helper on your laptop:</p>
+    <code>python helper/sonora_helper.py</code>
+   </div>
   </section>
 
   <div class="sec"><h2>Folders</h2><small>Drag, swipe or use the arrows</small></div>

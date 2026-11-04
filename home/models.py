@@ -65,6 +65,7 @@ class Track(models.Model):
             "format": self.format.upper().lstrip("."),
             "source_type": self.source_type,
             "is_available": self.is_available,
+            "is_local": self.source_type == "local",
             "file_hash": self.file_hash,
             "external_id": self.external_id,
         }

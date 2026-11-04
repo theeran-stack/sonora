@@ -2,13 +2,15 @@ services:
   - type: web
     name: sonora
     runtime: python
-    plan: starter # Starter plan enables persistent disk; change to 'free' (and comment out 'disk') if deploying on Free tier
+    plan: free
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --no-input
     startCommand: sh -c "python manage.py migrate && gunicorn myproject.wsgi:application"
-    disk:
-      name: sonora-media
-      mountPath: /var/data
-      sizeGB: 10
+    # Note: Render Free tier does not support persistent disks.
+    # To attach a persistent disk in the future, upgrade plan to 'starter' and uncomment:
+    # disk:
+    #   name: sonora-media
+    #   mountPath: /var/data
+    #   sizeGB: 10
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -16,8 +18,9 @@ services:
         value: "False"
       - key: DJANGO_SECRET_KEY
         generateValue: true
-      - key: SONORA_PERSISTENT_DIR
-        value: /var/data
+      # Optional: set when using a persistent disk mount on starter plan:
+      # - key: SONORA_PERSISTENT_DIR
+      #   value: /var/data
       # Set your sync token, MongoDB URI, and Jamendo Client ID in Render Dashboard:
       # - key: SONORA_SYNC_TOKEN
       #   generateValue: true

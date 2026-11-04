@@ -1,8 +1,10 @@
 import os
 import re
 import json
+import time
 import logging
 import mimetypes
+from datetime import datetime
 from pathlib import Path
 
 from django.conf import settings
@@ -169,24 +171,31 @@ def home_page(request):
     Renders the SONORA tactile music workstation.
     Passes database tracks, environment diagnostics, and initial state.
     """
-    db_tracks = Track.objects.filter(is_available=True)
-    if not db_tracks.exists():
-        db_tracks = Track.objects.all()
+    try:
+        db_tracks = Track.objects.filter(is_available=True)
+        if not db_tracks.exists():
+            db_tracks = Track.objects.all()
 
-    if db_tracks.exists():
-        tracks = [t.to_dict() for t in db_tracks]
-    else:
+        if db_tracks.exists():
+            tracks = [t.to_dict() for t in db_tracks]
+            has_db_tracks = True
+        else:
+            tracks = DEMO_TRACKS
+            has_db_tracks = False
+        pending_count = DownloadTask.objects.filter(status__in=["queued", "downloading"]).count()
+    except Exception as exc:
+        logger.warning(f"Database query error in home_page, falling back to demo tracks: {exc}")
         tracks = DEMO_TRACKS
+        has_db_tracks = False
+        pending_count = 0
 
     scan_dirs = getattr(settings, "MUSIC_SCAN_DIRECTORIES", [])
     primary_dir = str(scan_dirs[-1]) if scan_dirs else str(Path.home() / "Music")
     is_local_host = os.name == 'nt' and Path(primary_dir).exists()
 
-    pending_count = DownloadTask.objects.filter(status__in=["queued", "downloading"]).count()
-
     return render(request, "home/index.html", {
         "tracks": tracks,
-        "local_count": len(tracks) if db_tracks.exists() else 0,
+        "local_count": len(tracks) if has_db_tracks else 0,
         "music_dir": primary_dir,
         "is_hosted": not is_local_host,
         "environment_badge": "Local Windows" if is_local_host else "Cloud Hosted",
@@ -210,6 +219,20 @@ def stream_audio(request, track_id):
 
     track = get_object_or_404(Track, id=track_id)
     file_path = track.file_path
+
+    # 0. If track points to Supabase private storage (supabase://...), generate secure signed playback URL
+    if track.cloud_url and track.cloud_url.startswith("supabase://"):
+        from .supabase_storage import create_signed_playback_url
+        res = create_signed_playback_url(track.cloud_url)
+        if res.get("success") and res.get("playback_url"):
+            return stream_remote_audio_with_cors(res["playback_url"], request)
+        else:
+            return JsonResponse({
+                "error": "ERR_STORAGE_PLAYBACK_FAILED",
+                "code": "ERR_STORAGE_PLAYBACK_FAILED",
+                "message": res.get("message", "Could not generate secure playback URL from Supabase Storage."),
+                "track_id": track.id,
+            }, status=502)
 
     # If track points directly to a remote URL, proxy it with CORS
     if track.cloud_url and track.cloud_url.startswith("http"):
@@ -247,11 +270,31 @@ def stream_audio(request, track_id):
                     path_obj = cand
                     break
 
-    # 5. Remote fallback with CORS proxying
+    # 5. Missing file resolution
     if not path_obj or not path_obj.exists() or not path_obj.is_file():
-        demo_idx = (track.id - 1) % len(DEMO_TRACKS)
-        fallback_url = DEMO_TRACKS[demo_idx]["audio"]
-        return stream_remote_audio_with_cors(fallback_url, request)
+        # Only fallback to demo audio for demo tracks
+        if track.source_type == "demo":
+            demo_idx = (track.id - 1) % len(DEMO_TRACKS)
+            fallback_url = DEMO_TRACKS[demo_idx]["audio"]
+            return stream_remote_audio_with_cors(fallback_url, request)
+
+        # For local tracks stored on the user's laptop that are not in cloud storage:
+        # Explicit distinction between local and remote playback: do NOT pretend remote visitors can play local files!
+        response = JsonResponse({
+            "error": "ERR_LOCAL_TRACK_OFFLINE",
+            "code": "ERR_LOCAL_TRACK_OFFLINE",
+            "message": f"Track '{track.title}' is stored locally on the owner's laptop and is not streamable from cloud storage.",
+            "track_id": track.id,
+            "title": track.title,
+            "artist": track.artist,
+            "local_file": track.file_path,
+            "is_local_only": True,
+        }, status=404)
+        response["Access-Control-Allow-Origin"] = "*"
+        response["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Range, Content-Type, Accept"
+        response["X-Sonora-Track-Status"] = "local_only"
+        return response
 
     file_size = path_obj.stat().st_size
     content_type = AUDIO_MIME_TYPES.get(path_obj.suffix.lower(), "application/octet-stream")
@@ -354,28 +397,116 @@ def get_cover_art(request, track_id):
 @csrf_exempt
 @require_POST
 def api_scan_music(request):
-    """Triggers non-blocking background library scan."""
-    started = start_background_scan()
-    if started:
-        return JsonResponse({"status": "started", "message": "Local music scan started in background."})
+    """Triggers non-blocking library scan (local direct or hosted relay)."""
+    scan_dirs = getattr(settings, "MUSIC_SCAN_DIRECTORIES", [])
+    primary_dir = str(scan_dirs[-1]) if scan_dirs else str(Path.home() / "Documents" / "My musicc")
+    is_local_host = os.name == 'nt' and Path(primary_dir).exists()
+
+    if is_local_host:
+        started = start_background_scan()
+        if started:
+            return JsonResponse({
+                "status": "started",
+                "mode": "local",
+                "message": "Local music scan started in background.",
+                "data": SCAN_STATE.to_dict()
+            })
+        else:
+            return JsonResponse({
+                "status": "in_progress",
+                "mode": "local",
+                "message": "A scan is already in progress.",
+                "data": SCAN_STATE.to_dict()
+            })
     else:
+        # Hosted environment: dispatch command task for Windows Helper
+        SCAN_STATE.start()
+        SCAN_STATE.message = "Scan command dispatched to Windows Helper. Awaiting helper execution..."
+        task, _ = DownloadTask.objects.get_or_create(
+            provider="system_command",
+            title="scan_music",
+            status="queued",
+            defaults={
+                "external_id": f"scan_{int(time.time())}",
+                "download_url": "",
+                "progress": 0,
+            }
+        )
         return JsonResponse({
-            "status": "in_progress",
-            "message": "A scan is already in progress.",
+            "status": "queued",
+            "mode": "hosted",
+            "task_id": task.id,
+            "message": "Scan command dispatched to Windows Helper.",
             "data": SCAN_STATE.to_dict()
         })
 
 
 @require_GET
 def api_scan_status(request):
-    """Returns real-time scan progress, metrics, and discovered counts."""
-    return JsonResponse(SCAN_STATE.to_dict())
+    """Returns real-time scan progress, metrics, discovered counts, and helper state."""
+    scan_dirs = getattr(settings, "MUSIC_SCAN_DIRECTORIES", [])
+    primary_dir = str(scan_dirs[-1]) if scan_dirs else str(Path.home() / "Documents" / "My musicc")
+    is_local_host = os.name == 'nt' and Path(primary_dir).exists()
+
+    data = SCAN_STATE.to_dict()
+    if is_local_host:
+        data["helper_connected"] = True
+        data["mode"] = "local"
+    else:
+        data["mode"] = "hosted"
+    return JsonResponse(data)
+
+
+@csrf_exempt
+@require_POST
+def api_sync_scan_status(request):
+    """Helper pushes real-time scan progress metrics (Requires X-Sonora-Token)."""
+    if not check_sync_auth(request):
+        return JsonResponse({"error": "Unauthorized. Invalid or missing X-Sonora-Token."}, status=401)
+
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return JsonResponse({"error": "Malformed JSON payload"}, status=400)
+
+    SCAN_STATE.touch_helper()
+
+    is_scanning = data.get("is_scanning", False)
+    scanned_count = data.get("scanned_count", 0)
+    discovered_count = data.get("discovered_count", 0)
+    indexed_count = data.get("indexed_count", 0)
+    skipped_count = data.get("skipped_count", 0)
+    failed_count = data.get("failed_count", 0)
+    missing_count = data.get("missing_count", 0)
+    total_tracks = data.get("total_tracks", 0)
+    pending_sync = data.get("pending_sync_count", 0)
+    sync_status = data.get("sync_status", "synced")
+    msg = data.get("message", "")
+    errors = data.get("errors", [])
+
+    SCAN_STATE.is_scanning = is_scanning
+    SCAN_STATE.scanned_count = scanned_count
+    SCAN_STATE.discovered_count = discovered_count
+    SCAN_STATE.indexed_count = indexed_count
+    SCAN_STATE.skipped_count = skipped_count
+    SCAN_STATE.failed_count = failed_count
+    SCAN_STATE.missing_count = missing_count
+    SCAN_STATE.total_tracks = total_tracks or Track.objects.count()
+    SCAN_STATE.pending_sync_count = pending_sync
+    SCAN_STATE.sync_status = sync_status
+    SCAN_STATE.message = msg
+    if errors:
+        SCAN_STATE.errors.extend(errors)
+    if not is_scanning:
+        SCAN_STATE.last_scan = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return JsonResponse({"status": "received", "data": SCAN_STATE.to_dict()})
 
 
 @csrf_exempt
 @require_POST
 def api_upload_music(request):
-    """Saves uploaded audio files and indexes them into database."""
+    """Saves uploaded audio files and indexes them into database (Local storage fallback)."""
     files = request.FILES.getlist("audio_files") or request.FILES.getlist("files")
     if not files:
         return JsonResponse({"error": "No files provided"}, status=400)
@@ -386,7 +517,15 @@ def api_upload_music(request):
         upload_dir = settings.MEDIA_ROOT / "music"
     else:
         upload_dir = settings.BASE_DIR / "music_library"
-    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        upload_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return JsonResponse({
+            "error": "ERR_FILESYSTEM_READONLY",
+            "message": "Local filesystem is read-only. On cloud serverless deployments, use the Supabase signed upload endpoint /api/upload/sign/.",
+            "details": str(e)
+        }, status=400)
 
     supported = getattr(settings, "MUSIC_SUPPORTED_FORMATS", {".mp3", ".wav", ".flac", ".m4a", ".ogg"})
     saved = []
@@ -394,11 +533,17 @@ def api_upload_music(request):
         ext = os.path.splitext(f.name)[1].lower()
         if ext in supported:
             target_path = upload_dir / f.name
-            with open(target_path, "wb+") as dest:
-                for chunk in f.chunks():
-                    dest.write(chunk)
-            index_single_file(str(target_path))
-            saved.append(f.name)
+            try:
+                with open(target_path, "wb+") as dest:
+                    for chunk in f.chunks():
+                        dest.write(chunk)
+                index_single_file(str(target_path))
+                saved.append(f.name)
+            except OSError as e:
+                return JsonResponse({
+                    "error": "ERR_FILESYSTEM_WRITE_FAILED",
+                    "message": f"Could not write file to local disk: {e}"
+                }, status=500)
 
     if saved:
         start_background_scan()
@@ -408,6 +553,139 @@ def api_upload_music(request):
         "saved_count": len(saved),
         "files": saved,
         "message": f"Successfully stored {len(saved)} file(s)."
+    })
+
+
+@require_GET
+def api_upload_selection_list(request):
+    """
+    Returns tracks eligible for explicit user selection and cloud upload to Supabase Storage.
+    Enforces user requirement: 'Never automatically upload every scanned song.'
+    """
+    tracks = Track.objects.all().order_by("artist", "title")
+    items = []
+    for t in tracks:
+        items.append({
+            "id": t.id,
+            "title": t.title,
+            "artist": t.artist,
+            "album": t.album,
+            "duration": t.duration_formatted,
+            "format": t.format,
+            "is_in_cloud": bool(t.cloud_url and (t.cloud_url.startswith("http") or t.cloud_url.startswith("supabase://"))),
+            "cloud_url": t.cloud_url,
+            "source_type": t.source_type,
+        })
+    return JsonResponse({"tracks": items, "count": len(items)})
+
+
+@csrf_exempt
+@require_POST
+def api_upload_sign(request):
+    """
+    Generates a secure, temporary presigned upload URL for direct browser-to-Supabase upload.
+    Bypasses Vercel's 4.5 MB serverless request payload limit.
+    """
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        data = request.POST
+
+    filename = data.get("filename", "").strip()
+    track_id = data.get("track_id")
+
+    if not filename:
+        return JsonResponse({"error": "Filename is required"}, status=400)
+
+    from .supabase_storage import create_signed_upload_url, sanitize_storage_filename, is_supabase_storage_configured
+    if not is_supabase_storage_configured():
+        return JsonResponse({
+            "error": "ERR_STORAGE_UNCONFIGURED",
+            "message": "Supabase Storage credentials are not configured on this server."
+        }, status=503)
+
+    clean_name = sanitize_storage_filename(filename)
+    if track_id:
+        storage_path = f"tracks/{track_id}/{clean_name}"
+    else:
+        import uuid
+        storage_path = f"uploads/{uuid.uuid4().hex[:8]}/{clean_name}"
+
+    res = create_signed_upload_url(storage_path)
+    if res.get("success"):
+        return JsonResponse(res)
+    else:
+        return JsonResponse(res, status=502)
+
+
+@csrf_exempt
+@require_POST
+def api_upload_confirm(request):
+    """
+    Confirms an explicit audio upload to Supabase Storage.
+    Updates or creates Track metadata record linking to supabase://sonora-music/<path>.
+    """
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        data = request.POST
+
+    storage_path = data.get("storage_path", "").strip()
+    track_id = data.get("track_id")
+    title = data.get("title", "").strip()
+    artist = data.get("artist", "").strip() or "Unknown Artist"
+    album = data.get("album", "").strip() or "Unknown Album"
+    duration = float(data.get("duration_seconds", 0.0) or 0.0)
+
+    if not storage_path:
+        return JsonResponse({"error": "storage_path is required"}, status=400)
+
+    from .supabase_storage import get_bucket_name
+    bucket = get_bucket_name()
+    canonical_cloud_url = f"supabase://{bucket}/{storage_path}"
+
+    if track_id:
+        try:
+            track = Track.objects.get(id=track_id)
+            track.cloud_url = canonical_cloud_url
+            track.source_type = "upload"
+            track.is_available = True
+            track.save(update_fields=["cloud_url", "source_type", "is_available"])
+            return JsonResponse({
+                "status": "success",
+                "message": f"Track '{track.title}' successfully linked to Supabase Storage.",
+                "track": track.to_dict(),
+            })
+        except Track.DoesNotExist:
+            return JsonResponse({"error": f"Track id {track_id} not found"}, status=404)
+
+    # If new track uploaded directly
+    if not title:
+        title = Path(storage_path).stem.replace("_", " ").title()
+
+    track, created = Track.objects.get_or_create(
+        file_path=canonical_cloud_url,
+        defaults={
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "duration_seconds": duration,
+            "duration_formatted": f"{int(duration // 60)}:{int(duration % 60):02d}" if duration else "0:00",
+            "format": Path(storage_path).suffix.replace(".", "").upper() or "MP3",
+            "source_type": "upload",
+            "is_available": True,
+            "cloud_url": canonical_cloud_url,
+        }
+    )
+    if not created:
+        track.cloud_url = canonical_cloud_url
+        track.is_available = True
+        track.save(update_fields=["cloud_url", "is_available"])
+
+    return JsonResponse({
+        "status": "success",
+        "created": created,
+        "track": track.to_dict(),
     })
 
 
@@ -527,12 +805,16 @@ def api_download_cancel(request, task_id):
 def api_sync_status(request):
     """Returns synchronization telemetry and server mode."""
     scan_dirs = getattr(settings, "MUSIC_SCAN_DIRECTORIES", [])
-    primary_dir = str(scan_dirs[-1]) if scan_dirs else str(Path.home() / "Music")
+    primary_dir = str(scan_dirs[-1]) if scan_dirs else str(Path.home() / "Documents" / "My musicc")
     is_local = os.name == 'nt' and Path(primary_dir).exists()
 
+    state = SCAN_STATE.to_dict()
     return JsonResponse({
         "status": "online",
         "mode": "local" if is_local else "hosted",
+        "helper_connected": True if is_local else state["helper_connected"],
+        "sync_status": state.get("sync_status", "synced"),
+        "pending_sync_count": state.get("pending_sync_count", 0),
         "total_tracks": Track.objects.count(),
         "available_tracks": Track.objects.filter(is_available=True).count(),
         "pending_downloads": DownloadTask.objects.filter(status="queued").count(),
@@ -549,6 +831,7 @@ def api_sync_queue(request):
     if not check_sync_auth(request):
         return JsonResponse({"error": "Unauthorized. Invalid or missing X-Sonora-Token."}, status=401)
 
+    SCAN_STATE.touch_helper()
     pending = DownloadTask.objects.filter(status__in=["queued", "downloading"]).order_by("created_at")
     return JsonResponse({
         "status": "success",
@@ -564,6 +847,7 @@ def api_sync_queue_update(request):
     if not check_sync_auth(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
+    SCAN_STATE.touch_helper()
     try:
         data = json.loads(request.body.decode("utf-8"))
     except Exception:
@@ -603,6 +887,7 @@ def api_sync_tracks(request):
     if not check_sync_auth(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
+    SCAN_STATE.touch_helper()
     try:
         data = json.loads(request.body.decode("utf-8"))
     except Exception:
@@ -622,15 +907,18 @@ def api_sync_tracks(request):
         tag = t.get("tag", "Local")
         has_cov = t.get("has_cover", False)
         rel_path = t.get("relative_name", "")
+        orig_file_path = t.get("file_path", "")
 
-        # Look up by file hash or title/artist
+        # Look up by file hash or title/artist (avoid duplicates!)
         existing = None
         if f_hash:
             existing = Track.objects.filter(file_hash=f_hash).first()
+        if not existing and orig_file_path:
+            existing = Track.objects.filter(file_path=orig_file_path).first()
         if not existing and title:
             existing = Track.objects.filter(title=title, artist=artist).first()
 
-        hosted_file_path = str(settings.MEDIA_ROOT / "music" / rel_path) if rel_path else f"hosted_{title}"
+        hosted_file_path = orig_file_path or (str(settings.MEDIA_ROOT / "music" / rel_path) if rel_path else f"hosted_{title}")
 
         if existing:
             existing.title = title
@@ -641,6 +929,8 @@ def api_sync_tracks(request):
             existing.has_cover = has_cov
             existing.file_hash = f_hash
             existing.is_available = True
+            if orig_file_path:
+                existing.file_path = orig_file_path
             existing.save()
         else:
             Track.objects.create(
@@ -663,6 +953,8 @@ def api_sync_tracks(request):
         action="metadata_sync",
         details=f"Synchronized {synced_count} tracks from helper"
     )
+
+    SCAN_STATE.update_sync_state(sync_status="synced", pending_count=0)
 
     return JsonResponse({
         "status": "success",

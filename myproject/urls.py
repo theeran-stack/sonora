@@ -7,6 +7,9 @@ from home.views import (
     api_scan_music,
     api_scan_status,
     api_upload_music,
+    api_upload_selection_list,
+    api_upload_sign,
+    api_upload_confirm,
     api_discover_search,
     api_discover_queue,
     api_downloads_list,
@@ -17,6 +20,7 @@ from home.views import (
     api_sync_queue_update,
     api_sync_tracks,
     api_sync_upload,
+    api_sync_scan_status,
     api_faqs_list,
     api_error_codes_list,
     api_error_code_detail,
@@ -45,6 +49,9 @@ urlpatterns = [
     path("api/scan/", api_scan_music, name="api_scan_music"),
     path("api/scan-status/", api_scan_status, name="api_scan_status"),
     path("api/upload/", api_upload_music, name="api_upload_music"),
+    path("api/upload/selection/", api_upload_selection_list, name="api_upload_selection_list"),
+    path("api/upload/sign/", api_upload_sign, name="api_upload_sign"),
+    path("api/upload/confirm/", api_upload_confirm, name="api_upload_confirm"),
     # Discovery
     path("api/discover/search/", api_discover_search, name="api_discover_search"),
     path("api/discover/queue/", api_discover_queue, name="api_discover_queue"),
@@ -58,6 +65,7 @@ urlpatterns = [
     path("api/sync/queue/update/", api_sync_queue_update, name="api_sync_queue_update"),
     path("api/sync/tracks/", api_sync_tracks, name="api_sync_tracks"),
     path("api/sync/upload/", api_sync_upload, name="api_sync_upload"),
+    path("api/sync/scan-status/", api_sync_scan_status, name="api_sync_scan_status"),
     # FAQs
     path("api/faqs/", api_faqs_list, name="api_faqs_list"),
     # Error Codes
