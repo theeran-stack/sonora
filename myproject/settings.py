@@ -178,20 +178,23 @@ elif PERSISTENT_DIR:
 elif IS_VERCEL:
     # Vercel serverless environment: root filesystem is read-only, writable storage is in /tmp
     import shutil
-    tmp_db = Path('/tmp/db.sqlite3')
+    import tempfile
+    tmp_root = Path('/tmp') if os.path.exists('/tmp') else Path(tempfile.gettempdir())
+    tmp_db = tmp_root / 'db.sqlite3'
     orig_db = BASE_DIR / 'db.sqlite3'
     if orig_db.exists() and not tmp_db.exists():
         try:
             shutil.copy2(orig_db, tmp_db)
         except Exception:
             pass
-    DB_PATH = tmp_db if tmp_db.exists() else orig_db
+    DB_PATH = tmp_db
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': DB_PATH,
+            'NAME': str(DB_PATH),
         }
     }
+    SESSION_ENGINE = 'django.contrib.sessions.backends.signed_cookies'
 else:
     DB_PATH = BASE_DIR / 'db.sqlite3'
     DATABASES = {
